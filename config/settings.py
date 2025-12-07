@@ -1,0 +1,82 @@
+"""
+Settings - Configuration générale du Bot HFT
+
+Contient les endpoints API, configuration réseau, et paramètres système.
+"""
+
+import os
+from functools import lru_cache
+from pydantic_settings import BaseSettings
+from pydantic import Field
+
+
+class Settings(BaseSettings):
+    """Configuration générale du bot."""
+    
+    # ═══════════════════════════════════════════════════════════════
+    # APIs POLYMARKET - PUBLIQUES
+    # ═══════════════════════════════════════════════════════════════
+    polymarket_api_url: str = "https://clob.polymarket.com"
+    polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    gamma_api_url: str = "https://gamma-api.polymarket.com"
+    
+    # ═══════════════════════════════════════════════════════════════
+    # APIs POLYMARKET - PRIVÉES (à remplir)
+    # ═══════════════════════════════════════════════════════════════
+    polymarket_api_key: str = Field(default="", env="POLYMARKET_API_KEY")
+    polymarket_api_secret: str = Field(default="", env="POLYMARKET_API_SECRET")
+    
+    # ═══════════════════════════════════════════════════════════════
+    # WALLET POLYGON
+    # ═══════════════════════════════════════════════════════════════
+    wallet_address: str = Field(default="", env="WALLET_ADDRESS")
+    polygon_rpc_url: str = Field(default="https://polygon-rpc.com", env="POLYGON_RPC_URL")
+    chain_id: int = 137  # Polygon Mainnet
+    
+    # ═══════════════════════════════════════════════════════════════
+    # MARCHÉS CIBLES
+    # ═══════════════════════════════════════════════════════════════
+    target_keywords: list[str] = [
+        "BTC", "Bitcoin",
+        "SOL", "Solana", 
+        "ETH", "Ethereum",
+        "XRP", "Ripple"
+    ]
+    market_types: list[str] = ["Up", "Down", "above", "below", "higher", "lower"]
+    
+    # ═══════════════════════════════════════════════════════════════
+    # PARAMÈTRES SYSTÈME
+    # ═══════════════════════════════════════════════════════════════
+    scan_interval_seconds: float = 1.0  # Intervalle entre scans
+    request_timeout: int = 10  # Timeout requêtes API (secondes)
+    max_retries: int = 3  # Tentatives en cas d'erreur
+    
+    # ═══════════════════════════════════════════════════════════════
+    # CHEMINS FICHIERS
+    # ═══════════════════════════════════════════════════════════════
+    data_dir: str = "data"
+    trades_file: str = "data/trades.json"
+    opportunities_file: str = "data/opportunities.json"
+    trading_params_file: str = "config/trading_params.json"
+    wallet_encrypted_file: str = "wallet.enc"
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
+    
+    @property
+    def has_api_credentials(self) -> bool:
+        """Vérifie si les credentials API sont configurées."""
+        return bool(self.polymarket_api_key and self.polymarket_api_secret)
+    
+    @property
+    def has_wallet(self) -> bool:
+        """Vérifie si une adresse wallet est configurée."""
+        return bool(self.wallet_address)
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    """Retourne l'instance singleton des settings."""
+    return Settings()

@@ -1,0 +1,22 @@
+# Dépendances Bot HFT Polymarket
+
+# Interface Premium
+textual>=0.45.0
+rich>=13.0.0
+
+# APIs et HTTP
+httpx>=0.24.0
+websockets>=12.0
+aiohttp>=3.9.0
+
+# Sécurité
+cryptography>=41.0.0
+web3>=6.0.0
+py-clob-client>=0.17.0
+eth-account>=0.10.0
+
+# Utilitaires
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+pendulum>=3.0.0
