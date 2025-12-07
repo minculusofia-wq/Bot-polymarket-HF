@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚀 HFT Scalper Bot - Polymarket</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-yellow: #d29922;
+            --accent-purple: #a371f7;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .logo h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-bar {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-red);
+        }
+
+        .status-dot.active {
+            background: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+        }
+
+        /* Main Container */
+        .main-container {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 1.5rem;
+            padding: 1.5rem;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+
+        /* Panels */
+        .panel {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: var(--bg-tertiary);
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .panel-content {
+            padding: 1.25rem;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+
+        .stat-card {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-blue);
+        }
+
+        .stat-value.positive {
+            color: var(--accent-green);
+        }
+
+        .stat-value.negative {
+            color: var(--accent-red);
+        }
+
+        /* Config Form */
+        .config-group {
+            margin-bottom: 1rem;
+        }
+
+        .config-group label {
+            display: block;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .config-group input {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        .config-group input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #4a9eff;
+        }
+
+        .btn-success {
+            background: var(--accent-green);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #46c45e;
+        }
+
+        .btn-danger {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #ff6b5e;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .btn-group .btn {
+            flex: 1;
+        }
+
+        /* Opportunities Table */
+        .opportunities-container {
+            height: calc(100vh - 200px);
+            overflow-y: auto;
+        }
+
+        .opp-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .opp-table th {
+            background: var(--bg-tertiary);
+            padding: 1rem;
+            text-align: left;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            letter-spacing: 0.5px;
+            position: sticky;
+            top: 0;
+        }
+
+        .opp-table td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .opp-table tr:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .score-stars {
+            color: var(--accent-yellow);
+        }
+
+        .market-name {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .spread-value {
+            color: var(--accent-green);
+            font-weight: 600;
+        }
+
+        .action-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .action-trade {
+            background: rgba(63, 185, 80, 0.2);
+            color: var(--accent-green);
+        }
+
+        .action-watch {
+            background: rgba(210, 153, 34, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .action-skip {
+            background: rgba(139, 148, 158, 0.2);
+            color: var(--text-secondary);
+        }
+
+        /* Activity Log */
+        .activity-log {
+            height: 200px;
+            overflow-y: auto;
+            background: var(--bg-primary);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.8rem;
+        }
+
+        .log-entry {
+            padding: 0.25rem 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .log-time {
+            color: var(--text-secondary);
+        }
+
+        .log-info {
+            color: var(--accent-blue);
+        }
+
+        .log-success {
+            color: var(--accent-green);
+        }
+
+        .log-warning {
+            color: var(--accent-yellow);
+        }
+
+        .log-error {
+            color: var(--accent-red);
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            animation: pulse 1.5s infinite;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .main-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="logo">
+            <span style="font-size: 2rem;">🚀</span>
+            <h1>HFT SCALPER BOT</h1>
+        </div>
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Arrêté</span>
+            </div>
+            <div class="status-item">
+                <span>📊</span>
+                <span id="markets-count">0 marchés</span>
+            </div>
+            <div class="status-item">
+                <span>⏱️</span>
+                <span id="uptime">00:00:00</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Left Panel -->
+        <div class="left-panel">
+            <!-- Stats -->
+            <div class="panel">
+                <div class="panel-header">📊 Statistiques</div>
+                <div class="panel-content">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Trades Aujourd'hui</div>
+                            <div class="stat-value" id="stat-trades">0</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Win Rate</div>
+                            <div class="stat-value" id="stat-winrate">0%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">PnL Jour</div>
+                            <div class="stat-value" id="stat-pnl">$0.00</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Positions</div>
+                            <div class="stat-value" id="stat-positions">0/5</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Config -->
+            <div class="panel" style="margin-top: 1rem;">
+                <div class="panel-header">⚙️ Configuration</div>
+                <div class="panel-content">
+                    <div class="config-group">
+                        <label>💹 Spread Minimum ($)</label>
+                        <input type="number" id="config-spread" step="0.01" value="0.04">
+                    </div>
+                    <div class="config-group">
+                        <label>💰 Capital / Trade ($)</label>
+                        <input type="number" id="config-capital" step="1" value="50">
+                    </div>
+                    <div class="config-group">
+                        <label>📊 Positions Max</label>
+                        <input type="number" id="config-maxpos" step="1" value="5">
+                    </div>
+                    <button class="btn btn-primary" onclick="saveConfig()" style="width: 100%;">
+                        💾 Sauvegarder
+                    </button>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="panel" style="margin-top: 1rem;">
+                <div class="panel-header">🎮 Contrôles</div>
+                <div class="panel-content">
+                    <div class="btn-group">
+                        <button class="btn btn-success" id="btn-start" onclick="startBot()">
+                            ▶️ Démarrer
+                        </button>
+                        <button class="btn btn-danger" id="btn-stop" onclick="stopBot()" disabled>
+                            ⏹️ Arrêter
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Activity -->
+            <div class="panel" style="margin-top: 1rem;">
+                <div class="panel-header">📋 Activité</div>
+                <div class="panel-content">
+                    <div class="activity-log" id="activity-log"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel - Opportunities -->
+        <div class="panel">
+            <div class="panel-header">🎯 Opportunités en Temps Réel</div>
+            <div class="opportunities-container">
+                <table class="opp-table">
+                    <thead>
+                        <tr>
+                            <th>Score</th>
+                            <th>Marché</th>
+                            <th>Spread</th>
+                            <th>Volume</th>
+                            <th>YES</th>
+                            <th>NO</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="opp-tbody">
+                        <tr>
+                            <td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 3rem;">
+                                Cliquez "Démarrer" pour scanner les marchés
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        let ws = null;
+        let isRunning = false;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConfig();
+            connectWebSocket();
+            log('🚀 Dashboard initialisé', 'info');
+        });
+
+        // WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                log('📡 WebSocket connecté', 'success');
+            };
+            
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                handleMessage(msg);
+            };
+            
+            ws.onclose = () => {
+                log('📡 WebSocket déconnecté', 'warning');
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
+        function handleMessage(msg) {
+            if (msg.type === 'update') {
+                updateOpportunities(msg.data.opportunities);
+                document.getElementById('markets-count').textContent = `${msg.data.markets_count} marchés`;
+            } else if (msg.type === 'started') {
+                setRunning(true);
+                log(`✅ Scanner démarré - ${msg.markets} marchés`, 'success');
+            } else if (msg.type === 'stopped') {
+                setRunning(false);
+                log('⏹️ Scanner arrêté', 'warning');
+            }
+        }
+
+        // API Calls
+        async function startBot() {
+            try {
+                const res = await fetch('/api/start', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    setRunning(true);
+                } else {
+                    log(`❌ ${data.message}`, 'error');
+                }
+            } catch (e) {
+                log(`❌ Erreur: ${e.message}`, 'error');
+            }
+        }
+
+        async function stopBot() {
+            try {
+                const res = await fetch('/api/stop', { method: 'POST' });
+                const data = await res.json();
+                setRunning(false);
+            } catch (e) {
+                log(`❌ Erreur: ${e.message}`, 'error');
+            }
+        }
+
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                const config = await res.json();
+                document.getElementById('config-spread').value = config.min_spread;
+                document.getElementById('config-capital').value = config.capital_per_trade;
+                document.getElementById('config-maxpos').value = config.max_open_positions;
+            } catch (e) {
+                log(`❌ Erreur config: ${e.message}`, 'error');
+            }
+        }
+
+        async function saveConfig() {
+            try {
+                const config = {
+                    min_spread: parseFloat(document.getElementById('config-spread').value),
+                    capital_per_trade: parseFloat(document.getElementById('config-capital').value),
+                    max_open_positions: parseInt(document.getElementById('config-maxpos').value)
+                };
+                
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                
+                const data = await res.json();
+                if (data.success) {
+                    log('💾 Configuration sauvegardée', 'success');
+                }
+            } catch (e) {
+                log(`❌ Erreur: ${e.message}`, 'error');
+            }
+        }
+
+        // UI Updates
+        function setRunning(running) {
+            isRunning = running;
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+            const btnStart = document.getElementById('btn-start');
+            const btnStop = document.getElementById('btn-stop');
+            
+            if (running) {
+                dot.classList.add('active');
+                text.textContent = 'Actif';
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+            } else {
+                dot.classList.remove('active');
+                text.textContent = 'Arrêté';
+                btnStart.disabled = false;
+                btnStop.disabled = true;
+            }
+        }
+
+        function updateOpportunities(opportunities) {
+            const tbody = document.getElementById('opp-tbody');
+            
+            if (!opportunities || opportunities.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 2rem;">
+                            Aucune opportunité détectée...
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+            
+            tbody.innerHTML = opportunities.map(opp => `
+                <tr>
+                    <td class="score-stars">${'⭐'.repeat(opp.score)}</td>
+                    <td class="market-name">${opp.market}</td>
+                    <td class="spread-value">$${opp.spread.toFixed(3)}</td>
+                    <td>${formatVolume(opp.volume)}</td>
+                    <td>$${opp.price_yes.toFixed(2)}</td>
+                    <td>$${opp.price_no.toFixed(2)}</td>
+                    <td><span class="action-badge action-${opp.action}">${getActionLabel(opp.action)}</span></td>
+                </tr>
+            `).join('');
+        }
+
+        function formatVolume(vol) {
+            if (vol >= 1000000) return `$${(vol/1000000).toFixed(1)}M`;
+            if (vol >= 1000) return `$${(vol/1000).toFixed(1)}k`;
+            return `$${vol.toFixed(0)}`;
+        }
+
+        function getActionLabel(action) {
+            const labels = {
+                'trade': '🚀 TRADE',
+                'watch': '👀 WATCH',
+                'skip': '⏭️ SKIP'
+            };
+            return labels[action] || action;
+        }
+
+        function log(message, level = 'info') {
+            const logDiv = document.getElementById('activity-log');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-${level}">${message}</span>`;
+            logDiv.insertBefore(entry, logDiv.firstChild);
+            
+            // Limiter à 50 entrées
+            while (logDiv.children.length > 50) {
+                logDiv.removeChild(logDiv.lastChild);
+            }
+        }
+
+        // Uptime update
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/status');
+                const status = await res.json();
+                document.getElementById('uptime').textContent = status.uptime;
+            } catch (e) {}
+        }, 1000);
+    </script>
+</body>
+</html>

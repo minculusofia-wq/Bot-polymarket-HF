@@ -1,11 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# 🚀 HFT SCALPER BOT - LANCEMENT RAPIDE
+# 🚀 HFT Scalper Bot - Interface Web
 # =============================================================================
-# Double-cliquez sur ce fichier pour lancer le bot !
+# Double-cliquez pour lancer le dashboard web !
 # =============================================================================
 
-# Répertoire du script
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
@@ -13,7 +12,6 @@ cd "$SCRIPT_DIR"
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
-RED='\033[0;31m'
 NC='\033[0m'
 
 clear
@@ -28,49 +26,48 @@ cat << "EOF"
 ║   ██║  ██║██║        ██║       ███████║╚██████╗██║  ██║███████╗██║     ║
 ║   ╚═╝  ╚═╝╚═╝        ╚═╝       ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝     ║
 ║                                                                       ║
-║                    🚀 POLYMARKET TRADING BOT 🚀                       ║
+║                    🌐 DASHBOARD WEB 🌐                                ║
 ║                                                                       ║
 ╚═══════════════════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
 
 # Vérifier Python
-echo -e "${YELLOW}⏳ Vérification de l'environnement...${NC}"
+echo -e "${YELLOW}⏳ Vérification...${NC}"
 if ! command -v python3 &> /dev/null; then
     echo -e "${RED}❌ Python3 non trouvé !${NC}"
-    echo "Installez Python3 depuis https://python.org"
     read -p "Appuyez sur Entrée pour fermer..."
     exit 1
 fi
-echo -e "${GREEN}✓ Python3 trouvé${NC}"
+echo -e "${GREEN}✓ Python3 OK${NC}"
 
-# Vérifier/installer les dépendances
-python3 -c "import textual" 2>/dev/null
+# Installer les dépendances si nécessaire
+python3 -c "import fastapi" 2>/dev/null
 if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⏳ Installation des dépendances (première fois)...${NC}"
-    pip3 install -r requirements.txt --quiet
+    echo -e "${YELLOW}⏳ Installation des dépendances web...${NC}"
+    pip3 install fastapi uvicorn jinja2 python-multipart --quiet
     echo -e "${GREEN}✓ Dépendances installées${NC}"
-else
-    echo -e "${GREEN}✓ Dépendances OK${NC}"
 fi
 
 # Créer .env si nécessaire
 if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}⏳ Création du fichier de configuration...${NC}"
-    cp .env.example .env
-    echo -e "${GREEN}✓ Configuration créée${NC}"
+    cp .env.example .env 2>/dev/null
 fi
 
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}🚀 LANCEMENT DU BOT...${NC}"
+echo -e "${GREEN}🌐 LANCEMENT DU SERVEUR WEB...${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 echo ""
-
-# Lancer le bot
-python3 main.py
-
-# Si le bot se ferme, attendre avant de fermer le terminal
+echo -e "${GREEN}📊 Dashboard disponible sur: ${CYAN}http://localhost:8000${NC}"
 echo ""
-echo -e "${YELLOW}Bot arrêté. Appuyez sur Entrée pour fermer...${NC}"
+
+# Ouvrir le navigateur après 2 secondes
+(sleep 2 && open "http://localhost:8000") &
+
+# Lancer le serveur
+python3 -m uvicorn web.server:app --host 0.0.0.0 --port 8000 --reload
+
+echo ""
+echo -e "${YELLOW}Serveur arrêté. Appuyez sur Entrée pour fermer...${NC}"
 read

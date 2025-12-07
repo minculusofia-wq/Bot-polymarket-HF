@@ -1,21 +1,27 @@
-# Dépendances Bot HFT Polymarket
+# Dépendances# Bot HFT Polymarket - Dependencies
 
-# Interface Premium
+# Web Framework
+fastapi>=0.109.0
+uvicorn>=0.27.0
+jinja2>=3.1.0
+python-multipart>=0.0.6
+
+# UI Terminal (optionnel)
 textual>=0.45.0
-rich>=13.0.0
+rich>=13.7.0
 
-# APIs et HTTP
-httpx>=0.24.0
+# HTTP & WebSocket
+httpx>=0.26.0
 websockets>=12.0
 aiohttp>=3.9.0
 
-# Sécurité
+# Crypto & Security
 cryptography>=41.0.0
 web3>=6.0.0
 py-clob-client>=0.17.0
 eth-account>=0.10.0
 
-# Utilitaires
+# Utils
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
