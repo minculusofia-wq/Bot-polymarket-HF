@@ -188,21 +188,46 @@ class MarketScanner:
             self._set_state(ScannerState.RUNNING)
     
     async def _load_markets(self) -> None:
-        """Charge et filtre les marchés crypto Up/Down."""
-        if not self._polymarket_client:
+        """Charge et filtre les marchés crypto Up/Down via Gamma API (rapide)."""
+        if not self._polymarket_client or not self._gamma_client:
             return
         
-        # Récupérer les marchés filtrés
-        markets = await self._polymarket_client.get_crypto_updown_markets()
-        
-        # Créer les MarketData
-        for market in markets:
-            if market.id not in self._markets:
-                self._markets[market.id] = MarketData(market=market)
+        try:
+            # 1. Découverte rapide via Gamma API
+            gamma_markets = await self._gamma_client.get_crypto_markets()
+            
+            # 2. Récupération des détails via CLOB API (nécessaire pour Token IDs)
+            for gm in gamma_markets:
+                condition_id = gm.get("condition_id") or gm.get("id")
+                if not condition_id:
+                    continue
+                    
+                # Vérifier si on l'a déjà
+                if any(m.market.condition_id == condition_id for m in self._markets.values()):
+                    continue
                 
-                if self.on_new_market:
-                    self.on_new_market(market)
-    
+                try:
+                    # Récupérer les détails complets (Tokens IDs etc)
+                    market_details = await self._polymarket_client.get_market(condition_id)
+                    if not market_details:
+                        continue
+                        
+                    market = self._polymarket_client.parse_market(market_details)
+                    if market and market.active:
+                        self._markets[market.id] = MarketData(market=market)
+                        if self.on_new_market:
+                            self.on_new_market(market)
+                            
+                    # Petit délai pour éviter rate limiting
+                    await asyncio.sleep(0.05)
+                    
+                except Exception:
+                    continue
+                    
+        except Exception as e:
+            if self.on_error:
+                self.on_error(e)
+
     async def _scan_loop(self) -> None:
         """Boucle principale de scan."""
         while self._state in (ScannerState.RUNNING, ScannerState.PAUSED):
@@ -226,37 +251,11 @@ class MarketScanner:
                 if self.on_error:
                     self.on_error(e)
                 await asyncio.sleep(5)  # Attendre avant retry
-    
+
     async def _refresh_markets(self) -> None:
-        """Rafraîchit la liste des marchés."""
-        if not self._polymarket_client:
-            return
-        
-        try:
-            markets = await self._polymarket_client.get_crypto_updown_markets()
-            
-            current_ids = set(self._markets.keys())
-            new_ids = {m.id for m in markets}
-            
-            # Ajouter les nouveaux marchés
-            for market in markets:
-                if market.id not in self._markets:
-                    self._markets[market.id] = MarketData(market=market)
-                    if self.on_new_market:
-                        self.on_new_market(market)
-                else:
-                    # Mettre à jour les prix
-                    self._markets[market.id].market = market
-            
-            # Supprimer les marchés disparus
-            for market_id in current_ids - new_ids:
-                del self._markets[market_id]
-                if self.on_market_removed:
-                    self.on_market_removed(market_id)
-                    
-        except Exception as e:
-            if self.on_error:
-                self.on_error(e)
+        """Rafraîchit la liste des marchés via Gamma."""
+        # Même logique que _load_markets pour l'instant
+        await self._load_markets()
     
     async def _update_orderbooks(self) -> None:
         """Met à jour les orderbooks de tous les marchés."""
