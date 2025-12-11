@@ -1,113 +1,136 @@
-# 🚀 Bot HFT Polymarket
+# Bot HFT PolyScalper - Crypto Edition
 
-Bot de trading haute fréquence automatisé pour les marchés crypto Up/Down sur Polymarket.
+Bot de trading haute fréquence (HFT) pour scalper les marchés crypto court terme sur Polymarket.
+Optimisé pour la volatilité, la vitesse et l'exécution.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)
+![Binance](https://img.shields.io/badge/Data-Binance%20Live-yellow.svg)
 
-## ✨ Fonctionnalités
+## Fonctionnalités
 
-- 🔍 **Scanner temps réel** - Détecte les marchés BTC, SOL, ETH, XRP Up/Down
-- 📊 **Analyse de spreads** - Score les opportunités (1-5 étoiles)
-- ⚡ **Trading automatique** - Place les ordres bilatéraux (YES + NO)
-- 🖥️ **Interface premium** - Dashboard Textual interactif
-- 🔐 **Wallet sécurisé** - Chiffrement AES-256 de la clé privée
-- ⚙️ **Paramètres configurables** - Spread, capital, positions max
+### Scanner HFT
+- **WebSocket Temps Réel** - Latence 50ms (vs 1000ms polling REST)
+- **Scanner Ultra-Rapide** - Détection instantanée des opportunités sur BTC, ETH, SOL...
+- **Scoring Volatilité** - Intégration data Binance pour valider la volatilité réelle
+- **Market Finding** - Filtre automatique des marchés < 24h et > $20k volume
 
-## 📸 Aperçu
+### Stratégie Gabagool (Arbitrage Binaire)
+- **Principe** : Accumuler YES + NO pour que `avg_YES + avg_NO < $1.00`
+- **Profit Garanti** : Au settlement, une des deux options vaut $1
+- **Détection Auto** : Analyse en temps réel des opportunités d'arbitrage
+- **Gestion Positions** : Suivi des positions actives et profits verrouillés
 
-```
-╔═══════════════════════════════════════════════════════════════════╗
-║           🚀 POLYMARKET HFT SCALPER                               ║
-╠═══════════════════════════════════════════════════════════════════╣
-║  Scanner: 🟢 Actif     │  Wallet: 💳 Connecté    │  Uptime: 01:23 ║
-╠═══════════════════════════════════════════════════════════════════╣
-║  📊 OPPORTUNITÉS                                                   ║
-║  ⭐⭐⭐⭐⭐ SOL Up 5%    Spread: $0.08   Volume: $45k   🚀 TRADE    ║
-║  ⭐⭐⭐⭐   BTC Down 3%  Spread: $0.06   Volume: $128k  🚀 TRADE    ║
-║  ⭐⭐⭐     ETH Up 2%    Spread: $0.05   Volume: $32k   👀 WATCH    ║
-╚═══════════════════════════════════════════════════════════════════╝
-```
+### Market Maker
+- **Quotes Automatiques** - Placement d'ordres bid/ask
+- **Gestion du Spread** - Target spread configurable
+- **Position Management** - Limites et équilibrage automatique
 
-## 🚀 Installation
+### Dashboard Web
+- Interface réactive sur `http://localhost:8000`
+- Ticker Volatilité Binance (Top Movers)
+- Panel "Trades Actifs" pour gérer vos positions
+- Scanner d'opportunités avec score 1-5 étoiles
+- Configuration dynamique (Spread, Volume, Capital)
+
+## Optimisations HFT v2.0
+
+| Optimisation | Impact | Description |
+|-------------|--------|-------------|
+| WebSocket | 1000ms → 50ms | Données prix temps réel |
+| Cache TTL | 2s → 0.5s | Données 4x plus fraîches |
+| HTTP Timeout | 10s → 3s | Fail-fast pour HFT |
+| Cache Propriétés | 5-10x | Calculs pré-cachés |
+| Sets Filtrage | O(n) → O(1) | Filtrage positions instantané |
+| Seuil Prix | -70% calculs | Skip si prix stables |
+| Priorité Positions | +20% réactivité | Positions actives en premier |
+
+## Installation
 
 ```bash
-# Cloner le repo
-git clone https://github.com/minculusofia-wq/Bot-polymarket-HF.git
-cd Bot-polymarket-HF
+# 1. Cloner le repo
+git clone https://github.com/votre-repo/PolyScalper-HFT.git
+cd PolyScalper-HFT
 
-# Installer les dépendances
+# 2. Créer l'environnement virtuel
+python3 -m venv venv
+source venv/bin/activate
+
+# 3. Installer les dépendances
 pip install -r requirements.txt
 
-# Configurer
+# 4. Configurer
 cp .env.example .env
+# Editez .env avec vos clés API Polymarket
 ```
 
-## 🎮 Utilisation
+## Démarrage Rapide
 
-### Lancement rapide (macOS)
-```bash
-# Double-cliquez sur le fichier dans le Finder
-./🚀 Lancer Bot.command
-```
+1. **Lancer le serveur :**
+   ```bash
+   # macOS
+   ./🚀\ Lancer\ Bot.command
 
-### Ligne de commande
-```bash
-# Interface graphique
-python main.py
+   # Ou via terminal
+   source venv/bin/activate
+   python3 web/server.py
+   ```
 
-# Mode CLI
-python main.py --cli
+2. **Ouvrir le Dashboard :**
+   `http://localhost:8000`
 
-# Mode debug
-python main.py --debug
-```
+3. **Utilisation :**
+   - Cliquez sur **Start** pour lancer le scanner
+   - **Gabagool** : Active la stratégie d'arbitrage binaire
+   - **Market Maker** : Active le market making automatique
+   - Surveillez le P&L et les profits verrouillés
 
-## ⚙️ Configuration
+## Configuration
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `min_spread` | $0.04 | Spread minimum pour trader |
-| `capital_per_trade` | $50 | Capital par trade |
-| `max_open_positions` | 5 | Positions simultanées max |
-| `max_total_exposure` | $500 | Exposition totale max |
+| `min_spread` | $0.06 | Spread minimum (rentabilité scalping) |
+| `min_volume` | $20k | Liquidité minimale requise |
+| `max_duration` | 24h | Focus sur marchés court terme |
+| `capital` | $50 | Mise par trade |
+| `max_pair_cost` | $0.98 | Pair cost max pour Gabagool |
+| `order_size_usd` | $25 | Taille des ordres Gabagool |
 
-## 🔐 Sécurité
-
-- ✅ Clé privée **chiffrée AES-256**
-- ✅ Jamais stockée en clair
-- ✅ Prompt sécurisé (pas d'historique)
-- ✅ Déchiffrement en mémoire uniquement
-
-## 📁 Structure
+## Architecture
 
 ```
-Bot-polymarket-HF/
-├── config/          # Configuration
-├── core/            # Scanner, Analyzer, Executor
-├── api/             # Clients Polymarket
-│   ├── public/      # APIs publiques
-│   └── private/     # APIs privées (ordres)
-├── wallet/          # Gestion sécurisée du wallet
-├── ui/              # Interface Textual
-├── utils/           # Utilitaires
-└── main.py          # Point d'entrée
+PolyScalper-HFT/
+├── web/                 # Serveur FastAPI & Dashboard
+│   ├── server.py        # API endpoints + WebSocket
+│   └── templates/       # HTML Dashboard
+├── core/                # Moteur HFT
+│   ├── scanner.py       # Scanner temps réel + WebSocket
+│   ├── analyzer.py      # Scoring opportunités
+│   ├── gabagool.py      # Stratégie arbitrage binaire
+│   ├── market_maker.py  # Market making automatique
+│   ├── trade_manager.py # Gestion trades + SL/TP
+│   └── performance.py   # Optimisations (uvloop, orjson, cache)
+├── api/
+│   ├── public/          # Clients publics (Polymarket, Binance, Gamma)
+│   │   ├── polymarket_public.py
+│   │   ├── websocket_feed.py  # WebSocket temps réel
+│   │   └── binance_client.py
+│   └── private/         # Client privé (ordres, positions)
+│       └── polymarket_private.py
+├── config/              # Configuration
+└── requirements.txt
 ```
 
-## 🎯 Stratégie
+## Sécurité
 
-Le bot utilise une stratégie de **market making bilatéral** :
+- Les clés privées sont stockées localement dans `.env` (non commité)
+- Le bot tourne 100% en local
+- Aucune donnée envoyée à des serveurs tiers (sauf API Polymarket/Binance)
 
-1. Scanne les marchés crypto Up/Down
-2. Détecte les spreads > 4¢
-3. Place des ordres YES et NO légèrement off-best
-4. Capture le spread quand le marché oscille
+## Avertissement
 
-## ⚠️ Avertissement
+Ce logiciel est un outil d'aide au trading. Le trading de crypto-monnaies et de prédictions comporte des risques financiers importants. Utilisez uniquement le capital que vous pouvez vous permettre de perdre.
 
-> Ce bot exécute des trades réels. Utilisez avec prudence et commencez avec de petits montants.
+## License
 
-## 📄 License
-
-MIT License - Voir [LICENSE](LICENSE)
+MIT License

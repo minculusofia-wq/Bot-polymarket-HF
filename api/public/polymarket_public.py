@@ -8,6 +8,11 @@ Endpoints utilisés:
 - GET /trades : Trades récents
 
 Aucune clé API requise.
+
+Optimisations HFT:
+- Connection pooling (HTTP/2)
+- orjson pour parsing JSON rapide
+- Cache intégré pour orderbooks
 """
 
 import httpx
@@ -17,6 +22,17 @@ from datetime import datetime
 import asyncio
 
 from config import get_settings
+
+# Import des optimisations (avec fallback si non disponible)
+try:
+    from core.performance import json_loads, orderbook_cache
+    _HAS_PERF = True
+except ImportError:
+    _HAS_PERF = False
+    orderbook_cache = None
+    def json_loads(data):
+        import json
+        return json.loads(data) if isinstance(data, (str, bytes)) else data
 
 
 @dataclass
@@ -46,7 +62,16 @@ class Market:
     def spread(self) -> float:
         """Calcule le spread bid/ask."""
         return abs(1.0 - self.price_yes - self.price_no)
-    
+
+    @property
+    def hours_until_end(self) -> float:
+        """Retourne le nombre d'heures avant la fin du marché."""
+        if not self.end_date:
+            return 9999.0  # Pas de date de fin = très long terme
+        now = datetime.now(self.end_date.tzinfo) if self.end_date.tzinfo else datetime.now()
+        delta = self.end_date - now
+        return max(0, delta.total_seconds() / 3600)
+
     def matches_keywords(self, keywords: list[str]) -> bool:
         """Vérifie si le marché contient les mots-clés."""
         question_lower = self.question.lower()
@@ -109,46 +134,85 @@ class OrderBook:
 class PolymarketPublicClient:
     """
     Client pour les endpoints publics de Polymarket CLOB.
-    
+
     Usage:
         async with PolymarketPublicClient() as client:
             markets = await client.get_markets()
             orderbook = await client.get_orderbook(market_id)
+
+    Optimisations HFT:
+        - HTTP/2 avec connection pooling
+        - Keep-alive persistent
+        - orjson pour parsing rapide
+        - Cache orderbook intégré
     """
-    
+
     def __init__(self):
         self.settings = get_settings()
         self.base_url = self.settings.polymarket_api_url
         self._client: Optional[httpx.AsyncClient] = None
-    
+
     async def __aenter__(self):
-        """Initialise le client HTTP."""
+        """Initialise le client HTTP optimisé pour HFT."""
+        # Configuration optimisée pour HFT
+        limits = httpx.Limits(
+            max_keepalive_connections=20,  # Connexions persistantes
+            max_connections=50,            # Pool de connexions
+            keepalive_expiry=30.0          # Keep-alive 30s
+        )
+
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
-            timeout=self.settings.request_timeout,
+            timeout=httpx.Timeout(
+                connect=2.0,    # Timeout connexion (HFT optimisé)
+                read=3.0,       # Timeout lecture (HFT optimisé)
+                write=2.0,      # Timeout écriture (HFT optimisé)
+                pool=2.0        # Timeout pool (HFT optimisé)
+            ),
+            limits=limits,
+            http2=True,  # HTTP/2 pour multiplexing
             headers={
                 "Accept": "application/json",
-                "User-Agent": "HFT-Scalper-Bot/1.0"
+                "User-Agent": "HFT-Scalper-Bot/2.0",
+                "Connection": "keep-alive",
             }
         )
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Ferme le client HTTP."""
         if self._client:
             await self._client.aclose()
-    
+
     async def _request(
         self,
         method: str,
         endpoint: str,
         params: Optional[dict] = None,
-        retries: int = 3
+        retries: int = 3,
+        use_cache: bool = False,
+        cache_key: Optional[str] = None
     ) -> Any:
-        """Effectue une requête HTTP avec retry."""
+        """
+        Effectue une requête HTTP avec retry et cache optionnel.
+
+        Args:
+            method: Méthode HTTP
+            endpoint: Endpoint API
+            params: Paramètres de requête
+            retries: Nombre de tentatives
+            use_cache: Utiliser le cache
+            cache_key: Clé de cache personnalisée
+        """
         if not self._client:
             raise RuntimeError("Client non initialisé. Utilisez 'async with'.")
-        
+
+        # Vérifier le cache si activé
+        if use_cache and orderbook_cache and cache_key:
+            cached = orderbook_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         last_error = None
         for attempt in range(retries):
             try:
@@ -158,18 +222,30 @@ class PolymarketPublicClient:
                     params=params
                 )
                 response.raise_for_status()
-                return response.json()
+
+                # Utiliser orjson si disponible
+                if _HAS_PERF:
+                    result = json_loads(response.content)
+                else:
+                    result = response.json()
+
+                # Mettre en cache si activé
+                if use_cache and orderbook_cache and cache_key:
+                    orderbook_cache.set(cache_key, result)
+
+                return result
+
             except httpx.HTTPStatusError as e:
                 last_error = e
                 if e.response.status_code >= 500:
-                    await asyncio.sleep(1 * (attempt + 1))
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Backoff plus court
                     continue
                 raise
             except httpx.RequestError as e:
                 last_error = e
-                await asyncio.sleep(1 * (attempt + 1))
+                await asyncio.sleep(0.5 * (attempt + 1))
                 continue
-        
+
         raise last_error or Exception("Requête échouée après plusieurs tentatives")
     
     async def get_markets(
@@ -232,17 +308,24 @@ class PolymarketPublicClient:
                 return None
             raise
     
-    async def get_orderbook(self, token_id: str) -> dict:
+    async def get_orderbook(self, token_id: str, use_cache: bool = True) -> dict:
         """
-        Récupère l'orderbook d'un token.
-        
+        Récupère l'orderbook d'un token (avec cache HFT).
+
         Args:
             token_id: ID du token (YES ou NO)
-            
+            use_cache: Utiliser le cache (défaut: True, TTL 2s)
+
         Returns:
             Orderbook avec bids et asks
         """
-        response = await self._request("GET", f"/book", params={"token_id": token_id})
+        response = await self._request(
+            "GET",
+            "/book",
+            params={"token_id": token_id},
+            use_cache=use_cache,
+            cache_key=f"ob:{token_id}"
+        )
         return response
     
     async def get_price(self, token_id: str) -> Optional[float]:
@@ -288,8 +371,11 @@ class PolymarketPublicClient:
                 except Exception:
                     pass
             
+            # Fallback ID: condition_id si id absent
+            m_id = data.get("id") or data.get("condition_id")
+            
             return Market(
-                id=data.get("id", ""),
+                id=m_id,
                 condition_id=data.get("condition_id", ""),
                 question=data.get("question", ""),
                 slug=data.get("slug", ""),
@@ -303,6 +389,7 @@ class PolymarketPublicClient:
                 active=data.get("active", True)
             )
         except Exception as e:
+            print(f"Erreur parsing market: {e}")
             return None
     
     async def get_crypto_updown_markets(self) -> list[Market]:

@@ -7,6 +7,11 @@ Fonctionnalités:
 3. Filtre par type (Up/Down)
 4. Analyse les orderbooks en temps réel
 5. Émet des événements quand une opportunité est détectée
+
+Optimisations HFT v2.0:
+- Concurrence augmentée (20 requêtes parallèles)
+- Batch processing pour orderbooks
+- Cache intégré pour réduire latence
 """
 
 import asyncio
@@ -14,9 +19,11 @@ from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import time
 
 from api.public import PolymarketPublicClient, GammaClient, WebSocketFeed
 from api.public.polymarket_public import Market, OrderBook
+from api.public.websocket_feed import PriceUpdate, BookUpdate
 from config import get_settings, get_trading_params
 
 
@@ -68,87 +75,219 @@ class MarketData:
 class MarketScanner:
     """
     Scanne les marchés crypto Up/Down de Polymarket.
-    
+
     Usage:
         scanner = MarketScanner()
         scanner.on_market_update = my_callback
         await scanner.start()
+
+    Optimisations HFT:
+        - 20 requêtes parallèles (au lieu de 10)
+        - Batch processing des orderbooks
+        - Métriques de performance intégrées
     """
-    
+
     def __init__(self):
         self.settings = get_settings()
         self._state = ScannerState.STOPPED
         self._markets: dict[str, MarketData] = {}
         self._scan_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
-        
+        self._concurrency = asyncio.Semaphore(20)  # HFT: 20 requêtes parallèles
+
         # Clients API
         self._polymarket_client: Optional[PolymarketPublicClient] = None
         self._gamma_client: Optional[GammaClient] = None
         self._ws_feed: Optional[WebSocketFeed] = None
-        
+
         # Callbacks
         self.on_market_update: Optional[Callable[[MarketData], None]] = None
         self.on_new_market: Optional[Callable[[Market], None]] = None
         self.on_market_removed: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[Exception], None]] = None
         self.on_state_change: Optional[Callable[[ScannerState], None]] = None
+
+        # Métriques de performance
+        self._last_cycle_duration: float = 0.0
+        self._total_cycles: int = 0
+        self._avg_cycle_duration: float = 0.0
+        self._ws_updates: int = 0  # Compteur updates WebSocket
+
+        # Mapping token_id -> market_id pour WebSocket
+        self._token_to_market: dict[str, tuple[str, str]] = {}  # token_id -> (market_id, "yes"|"no")
+
+        # IDs prioritaires pour refresh (marchés avec positions actives)
+        self._priority_market_ids: set = set()
     
     @property
     def state(self) -> ScannerState:
         """État actuel du scanner."""
         return self._state
-    
+
     @property
     def markets(self) -> dict[str, MarketData]:
         """Marchés actuellement suivis."""
         return self._markets.copy()
-    
+
     @property
     def market_count(self) -> int:
         """Nombre de marchés suivis."""
         return len(self._markets)
-    
+
+    @property
+    def performance_stats(self) -> dict:
+        """Retourne les statistiques de performance du scanner."""
+        return {
+            "last_cycle_ms": round(self._last_cycle_duration * 1000, 1),
+            "avg_cycle_ms": round(self._avg_cycle_duration * 1000, 1),
+            "total_cycles": self._total_cycles,
+            "markets_count": len(self._markets),
+            "concurrency_limit": 20,
+            "ws_connected": self._ws_feed.is_connected if self._ws_feed else False,
+            "ws_updates": self._ws_updates,
+        }
+
     def _set_state(self, state: ScannerState) -> None:
         """Change l'état du scanner."""
         self._state = state
         if self.on_state_change:
             self.on_state_change(state)
-    
+
     async def start(self) -> None:
         """
-        Démarre le scanner.
-        
-        1. Initialise les clients API
-        2. Charge les marchés initiaux
-        3. Démarre la boucle de scan
+        Démarre le scanner avec WebSocket temps réel.
         """
         if self._state == ScannerState.RUNNING:
             return
-        
+
         self._set_state(ScannerState.STARTING)
-        
+
         try:
             # Initialiser les clients
             self._polymarket_client = PolymarketPublicClient()
             self._gamma_client = GammaClient()
-            
+
             await self._polymarket_client.__aenter__()
             await self._gamma_client.__aenter__()
-            
+
             # Charger les marchés initiaux
             await self._load_markets()
-            
-            # Démarrer la boucle de scan
+
+            # Initialiser le WebSocket pour données temps réel
+            await self._init_websocket()
+
+            # Démarrer la boucle de scan (fallback + refresh marchés)
             self._scan_task = asyncio.create_task(self._scan_loop())
-            
+
             self._set_state(ScannerState.RUNNING)
-            
+
         except Exception as e:
             self._set_state(ScannerState.ERROR)
             if self.on_error:
                 self.on_error(e)
             raise
+
+    async def _init_websocket(self) -> None:
+        """Initialise et connecte le WebSocket pour données temps réel."""
+        try:
+            self._ws_feed = WebSocketFeed()
+
+            # Configurer les callbacks
+            self._ws_feed.on_price_update = self._handle_price_update
+            self._ws_feed.on_book_update = self._handle_book_update
+            self._ws_feed.on_error = self._handle_ws_error
+            self._ws_feed.on_connect = lambda: print("🔌 [WS] WebSocket connecté - Mode temps réel activé")
+            self._ws_feed.on_disconnect = lambda: print("⚠️ [WS] WebSocket déconnecté - Fallback REST")
+
+            # Construire le mapping token_id -> market
+            self._build_token_mapping()
+
+            # Se connecter
+            connected = await self._ws_feed.connect()
+            if connected:
+                # S'abonner à tous les tokens
+                token_ids = list(self._token_to_market.keys())
+                if token_ids:
+                    await self._ws_feed.subscribe(token_ids)
+                    print(f"📡 [WS] Abonné à {len(token_ids)} tokens")
+
+                # Lancer la tâche d'écoute en background
+                self._ws_task = asyncio.create_task(self._ws_feed.listen())
+            else:
+                print("⚠️ [WS] Connexion WebSocket échouée - Mode REST uniquement")
+
+        except Exception as e:
+            print(f"⚠️ [WS] Erreur init WebSocket: {e} - Mode REST uniquement")
+
+    def _build_token_mapping(self) -> None:
+        """Construit le mapping token_id -> (market_id, side)."""
+        self._token_to_market.clear()
+        for market_id, market_data in self._markets.items():
+            market = market_data.market
+            self._token_to_market[market.token_yes_id] = (market_id, "yes")
+            self._token_to_market[market.token_no_id] = (market_id, "no")
+
+    def _handle_price_update(self, update: PriceUpdate) -> None:
+        """Handler pour les mises à jour de prix WebSocket."""
+        mapping = self._token_to_market.get(update.token_id)
+        if not mapping:
+            return
+
+        market_id, side = mapping
+        market_data = self._markets.get(market_id)
+        if not market_data:
+            return
+
+        self._ws_updates += 1
+
+        # Mettre à jour le prix selon le côté
+        if side == "yes":
+            market_data.best_ask_yes = update.price
+        else:
+            market_data.best_ask_no = update.price
+
+        market_data.last_update = datetime.now()
+
+        if self.on_market_update:
+            self.on_market_update(market_data)
+
+    def _handle_book_update(self, update: BookUpdate) -> None:
+        """Handler pour les mises à jour d'orderbook WebSocket."""
+        mapping = self._token_to_market.get(update.token_id)
+        if not mapping:
+            return
+
+        market_id, side = mapping
+        market_data = self._markets.get(market_id)
+        if not market_data:
+            return
+
+        self._ws_updates += 1
+
+        # Mettre à jour les prix et spreads
+        if side == "yes":
+            if update.bids:
+                market_data.best_bid_yes = update.bids[0][0]
+            if update.asks:
+                market_data.best_ask_yes = update.asks[0][0]
+            if market_data.best_bid_yes and market_data.best_ask_yes:
+                market_data.spread_yes = market_data.best_ask_yes - market_data.best_bid_yes
+        else:
+            if update.bids:
+                market_data.best_bid_no = update.bids[0][0]
+            if update.asks:
+                market_data.best_ask_no = update.asks[0][0]
+            if market_data.best_bid_no and market_data.best_ask_no:
+                market_data.spread_no = market_data.best_ask_no - market_data.best_bid_no
+
+        market_data.last_update = datetime.now()
+
+        if self.on_market_update:
+            self.on_market_update(market_data)
+
+    def _handle_ws_error(self, error: Exception) -> None:
+        """Handler pour les erreurs WebSocket."""
+        print(f"⚠️ [WS] Erreur: {error}")
     
     async def stop(self) -> None:
         """Arrête le scanner."""
@@ -176,142 +315,198 @@ class MarketScanner:
             await self._gamma_client.__aexit__(None, None, None)
         if self._ws_feed:
             await self._ws_feed.disconnect()
-    
+            
     def pause(self) -> None:
-        """Met le scanner en pause."""
         if self._state == ScannerState.RUNNING:
             self._set_state(ScannerState.PAUSED)
-    
+            
     def resume(self) -> None:
-        """Reprend le scan."""
         if self._state == ScannerState.PAUSED:
             self._set_state(ScannerState.RUNNING)
-    
+
+    async def _fetch_market_details(self, condition_id: str) -> Optional[Market]:
+        """Worker pour récupérer les détails d'un marché avec Semaphore."""
+        async with self._concurrency:
+            try:
+                market_details = await self._polymarket_client.get_market(condition_id)
+                if not market_details:
+                    return None
+                return self._polymarket_client.parse_market(market_details)
+            except Exception as e:
+                # print(f"❌ Error fetching {condition_id}: {e}")
+                return None
+
     async def _load_markets(self) -> None:
-        """Charge et filtre les marchés crypto Up/Down via Gamma API (rapide)."""
+        """Charge et filtre les marchés crypto Up/Down via Gamma API (Parallélisé)."""
         if not self._polymarket_client or not self._gamma_client:
             return
         
         try:
             # 1. Découverte rapide via Gamma API
+            print("🔄 [Scanner] Recherche via Gamma API...")
             gamma_markets = await self._gamma_client.get_crypto_markets()
+            print(f"✅ [Scanner] Gamma trouvé: {len(gamma_markets)} marchés potentiels")
             
-            # 2. Récupération des détails via CLOB API (nécessaire pour Token IDs)
+            # Filtrer ceux qu'on a déjà
+            candidates = []
             for gm in gamma_markets:
-                condition_id = gm.get("condition_id") or gm.get("id")
-                if not condition_id:
-                    continue
-                    
-                # Vérifier si on l'a déjà
-                if any(m.market.condition_id == condition_id for m in self._markets.values()):
-                    continue
-                
-                try:
-                    # Récupérer les détails complets (Tokens IDs etc)
-                    market_details = await self._polymarket_client.get_market(condition_id)
-                    if not market_details:
-                        continue
-                        
-                    market = self._polymarket_client.parse_market(market_details)
-                    if market and market.active:
-                        self._markets[market.id] = MarketData(market=market)
-                        if self.on_new_market:
-                            self.on_new_market(market)
-                            
-                    # Petit délai pour éviter rate limiting
-                    await asyncio.sleep(0.05)
-                    
-                except Exception:
-                    continue
+                condition_id = gm.get("conditionId") or gm.get("condition_id") or gm.get("id")
+                if condition_id and not any(m.market.condition_id == condition_id for m in self._markets.values()):
+                    candidates.append(condition_id)
+            
+            if not candidates:
+                print("🎉 [Scanner] Aucun nouveau marché à ajouter.")
+                return
+
+            print(f"🚀 [Scanner] Traitement parallèle de {len(candidates)} marchés...")
+            
+            # 2. Récupération parallèle des détails
+            tasks = [self._fetch_market_details(cid) for cid in candidates]
+            results = await asyncio.gather(*tasks)
+            
+            count_added = 0
+            for market in results:
+                if market and market.active:
+                    self._markets[market.id] = MarketData(market=market)
+                    count_added += 1
+                    if self.on_new_market:
+                        self.on_new_market(market)
+            
+            print(f"🎉 [Scanner] Chargement terminé. {count_added} nouveaux marchés ajoutés.")
                     
         except Exception as e:
+            print(f"❌ [Scanner] Erreur globale load_markets: {e}")
             if self.on_error:
                 self.on_error(e)
 
     async def _scan_loop(self) -> None:
-        """Boucle principale de scan."""
+        """Boucle principale de scan avec métriques de performance."""
+        error_count = 0
+        max_errors = 5
+
         while self._state in (ScannerState.RUNNING, ScannerState.PAUSED):
             try:
                 if self._state == ScannerState.PAUSED:
                     await asyncio.sleep(1)
                     continue
-                
-                # Rafraîchir les marchés périodiquement
+
+                # Mesure du temps de cycle
+                cycle_start = time.perf_counter()
+
                 await self._refresh_markets()
-                
-                # Mettre à jour les orderbooks
                 await self._update_orderbooks()
-                
-                # Attendre avant le prochain scan
-                await asyncio.sleep(self.settings.scan_interval_seconds)
-                
+
+                # Calcul des métriques de performance
+                cycle_duration = time.perf_counter() - cycle_start
+                self._last_cycle_duration = cycle_duration
+                self._total_cycles += 1
+
+                # Moyenne mobile exponentielle pour cycle moyen
+                alpha = 0.1
+                if self._avg_cycle_duration == 0:
+                    self._avg_cycle_duration = cycle_duration
+                else:
+                    self._avg_cycle_duration = (alpha * cycle_duration +
+                                                (1 - alpha) * self._avg_cycle_duration)
+
+                # Reset error count on successful cycle
+                error_count = 0
+
+                # Intervalle de scan dynamique (min 1s si cycle long)
+                sleep_time = max(0.5, self.settings.scan_interval_seconds - cycle_duration)
+                await asyncio.sleep(sleep_time)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                error_count += 1
+                print(f"⚠️ [Scanner] Erreur cycle #{error_count}: {e}")
+
                 if self.on_error:
                     self.on_error(e)
-                await asyncio.sleep(5)  # Attendre avant retry
+
+                # Backoff progressif en cas d'erreurs répétées
+                if error_count >= max_errors:
+                    print(f"❌ [Scanner] Trop d'erreurs ({error_count}), pause de 30s")
+                    await asyncio.sleep(30)
+                    error_count = 0
+                else:
+                    await asyncio.sleep(2 * error_count)  # Backoff plus court pour HFT
 
     async def _refresh_markets(self) -> None:
-        """Rafraîchit la liste des marchés via Gamma."""
-        # Même logique que _load_markets pour l'instant
         await self._load_markets()
     
-    async def _update_orderbooks(self) -> None:
-        """Met à jour les orderbooks de tous les marchés."""
-        if not self._polymarket_client:
-            return
-        
-        for market_id, market_data in list(self._markets.items()):
+    async def _fetch_single_orderbook(self, market_data: MarketData) -> None:
+        """Worker pour update un seul orderbook."""
+        async with self._concurrency:
             try:
-                # Récupérer l'orderbook YES
-                orderbook_yes = await self._polymarket_client.get_orderbook(
+                # YES Orderbook
+                market_data.orderbook_yes = await self._polymarket_client.get_orderbook(
                     market_data.market.token_yes_id
                 )
-                
-                # Parser les données
-                bids = orderbook_yes.get("bids", [])
-                asks = orderbook_yes.get("asks", [])
-                
-                market_data.orderbook_yes = orderbook_yes
+                bids = market_data.orderbook_yes.get("bids", [])
+                asks = market_data.orderbook_yes.get("asks", [])
                 market_data.best_bid_yes = float(bids[0]["price"]) if bids else None
                 market_data.best_ask_yes = float(asks[0]["price"]) if asks else None
-                
                 if market_data.best_bid_yes and market_data.best_ask_yes:
                     market_data.spread_yes = market_data.best_ask_yes - market_data.best_bid_yes
-                
-                # Récupérer l'orderbook NO
-                orderbook_no = await self._polymarket_client.get_orderbook(
+
+                # NO Orderbook
+                market_data.orderbook_no = await self._polymarket_client.get_orderbook(
                     market_data.market.token_no_id
                 )
-                
-                bids = orderbook_no.get("bids", [])
-                asks = orderbook_no.get("asks", [])
-                
-                market_data.orderbook_no = orderbook_no
+                bids = market_data.orderbook_no.get("bids", [])
+                asks = market_data.orderbook_no.get("asks", [])
                 market_data.best_bid_no = float(bids[0]["price"]) if bids else None
                 market_data.best_ask_no = float(asks[0]["price"]) if asks else None
-                
                 if market_data.best_bid_no and market_data.best_ask_no:
                     market_data.spread_no = market_data.best_ask_no - market_data.best_bid_no
                 
                 market_data.last_update = datetime.now()
                 
-                # Notifier de la mise à jour
                 if self.on_market_update:
                     self.on_market_update(market_data)
-                
-                # Petit délai pour éviter le rate limiting
-                await asyncio.sleep(0.1)
-                
-            except Exception as e:
-                # Ignorer les erreurs individuelles
-                continue
-    
+
+            except Exception:
+                pass
+
+    async def _update_orderbooks(self) -> None:
+        """
+        Met à jour les orderbooks en parallèle.
+
+        Optimisation HFT: Fetch les marchés prioritaires (positions actives) EN PREMIER.
+        """
+        if not self._polymarket_client:
+            return
+
+        # Séparer marchés prioritaires et autres
+        priority_markets = []
+        other_markets = []
+
+        for md in self._markets.values():
+            if md.market.id in self._priority_market_ids:
+                priority_markets.append(md)
+            else:
+                other_markets.append(md)
+
+        # Fetch prioritaires d'abord (données plus fraîches pour stratégie)
+        if priority_markets:
+            priority_tasks = [self._fetch_single_orderbook(md) for md in priority_markets]
+            await asyncio.gather(*priority_tasks)
+
+        # Puis les autres
+        if other_markets:
+            other_tasks = [self._fetch_single_orderbook(md) for md in other_markets]
+            await asyncio.gather(*other_tasks)
+
+    def set_priority_markets(self, market_ids: set) -> None:
+        """Définit les marchés prioritaires pour le refresh."""
+        self._priority_market_ids = market_ids
+
     async def get_market_data(self, market_id: str) -> Optional[MarketData]:
         """Récupère les données d'un marché spécifique."""
         return self._markets.get(market_id)
-    
+
     async def force_refresh(self) -> None:
         """Force un rafraîchissement immédiat."""
         await self._refresh_markets()

@@ -131,12 +131,13 @@ class OpportunityAnalyzer:
         """Met à jour les paramètres."""
         self._params = params
     
-    def analyze_market(self, market_data: MarketData) -> Optional[Opportunity]:
+    def analyze_market(self, market_data: MarketData, volatility_map: dict = None) -> Optional[Opportunity]:
         """
         Analyse un marché et retourne une opportunité si valide.
         
         Args:
             market_data: Données du marché
+            volatility_map: Map optionnelle {asset_symbol: volatility_score}
             
         Returns:
             Opportunity si les critères sont remplis, None sinon
@@ -161,6 +162,15 @@ class OpportunityAnalyzer:
         # Vérifier le volume minimum
         if market.volume < self._params.min_volume_usd:
             return None
+            
+        # Vérifier la durée (Short-term focus)
+        duration_hours = market.hours_until_end
+        if duration_hours > self._params.max_duration_hours:
+            return None
+            
+        # Exclure les marchés sans fin définie ou trop lointains
+        if duration_hours <= 0 and not market.end_date:
+             return None
         
         # Calculer les prix recommandés (off-best)
         recommended_yes = (market_data.best_bid_yes or 0) + self._params.order_offset
@@ -171,7 +181,7 @@ class OpportunityAnalyzer:
         recommended_no = max(0.01, min(0.99, recommended_no))
         
         # Calculer le score
-        score, breakdown = self._calculate_score(market_data, effective_spread)
+        score, breakdown = self._calculate_score(market_data, effective_spread, volatility_map)
         
         # Déterminer l'action
         if score >= 4:
@@ -210,7 +220,8 @@ class OpportunityAnalyzer:
     def _calculate_score(
         self,
         market_data: MarketData,
-        effective_spread: float
+        effective_spread: float,
+        volatility_map: dict = None
     ) -> tuple[int, dict]:
         """
         Calcule le score d'une opportunité.
@@ -227,6 +238,49 @@ class OpportunityAnalyzer:
         breakdown = {}
         total_points = 0
         max_points = 0
+        
+        # 0. Score volatilité externe (Bonus)
+        # Si on a des données de Binance
+        if volatility_map:
+            # Essayer de trouver l'asset dans la question ou les tags
+            market_text = market_data.market.question.upper()
+            asset_vol = 0
+            for asset, vol in volatility_map.items():
+                if asset in market_text:
+                    asset_vol = vol
+                    break
+            
+            if asset_vol > 0:
+                max_points += 20
+                # Normaliser la volatilité (ex: 2% = low, 5% = high)
+                # Volatility ranking retourne un score relatif ou brut ? 
+                # Supposons que c'est le 24h range percent.
+                if asset_vol >= 5.0: vol_points = 20
+                elif asset_vol >= 3.0: vol_points = 15
+                elif asset_vol >= 1.5: vol_points = 10
+                else: vol_points = 5
+                
+                total_points += vol_points
+                breakdown["binance_vol"] = vol_points
+
+        # 0. Score durée (0-30 points) - CRITIQUE POUR HFT
+        # Plus c'est court, mieux c'est pour la volatilité
+        max_points += 30
+        duration_hours = market_data.market.hours_until_end
+        if duration_hours <= 1:
+            duration_points = 30  # Max points pour < 1h
+        elif duration_hours <= 4:
+            duration_points = 25
+        elif duration_hours <= 12:
+            duration_points = 20
+        elif duration_hours <= 24:
+            duration_points = 15
+        elif duration_hours <= 48:
+            duration_points = 10
+        else:
+            duration_points = 5
+        total_points += duration_points
+        breakdown["duration"] = duration_points
         
         # 1. Score spread (0-25 points)
         max_points += 25
@@ -314,7 +368,8 @@ class OpportunityAnalyzer:
     
     def analyze_all_markets(
         self,
-        markets: dict[str, MarketData]
+        markets: dict[str, MarketData],
+        volatility_map: dict = None
     ) -> list[Opportunity]:
         """
         Analyse tous les marchés et retourne les opportunités.
@@ -328,7 +383,7 @@ class OpportunityAnalyzer:
         opportunities = []
         
         for market_data in markets.values():
-            opportunity = self.analyze_market(market_data)
+            opportunity = self.analyze_market(market_data, volatility_map)
             if opportunity:
                 opportunities.append(opportunity)
         

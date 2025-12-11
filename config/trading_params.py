@@ -9,46 +9,57 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
 class TradingParams:
     """
     Paramètres de trading ajustables en temps réel.
-    
+
     Ces valeurs contrôlent le comportement du bot:
     - Quand entrer en position (spread minimum)
     - Combien trader (capital par trade)
     - Limites de risque (positions max, exposition totale)
     """
-    
+
     # ═══════════════════════════════════════════════════════════════
-    # PARAMÈTRES DE SPREAD
+    # PARAMÈTRES DE SPREAD (Optimisés HFT)
     # ═══════════════════════════════════════════════════════════════
-    min_spread: float = 0.04      # Spread minimum pour trader (4¢)
-    max_spread: float = 0.20      # Spread max (évite marchés illiquides)
-    
+    min_spread: float = 0.06      # Spread optimal pour HFT (6 cents)
+    max_spread: float = 0.25      # Spread max (évite illiquides)
+
+    # ═══════════════════════════════════════════════════════════════
+    # PARAMÈTRES DE VOLUME (Optimisés HFT)
+    # ═══════════════════════════════════════════════════════════════
+    min_volume_usd: float = 20000.0    # Volume minimum 20k$ (marchés liquides)
+    min_depth_usd: float = 50.0        # Profondeur carnet min 50$ (évite fake liquidity)
+    max_duration_hours: int = 24       # Durée max du marché (short-term focus)
+
     # ═══════════════════════════════════════════════════════════════
     # PARAMÈTRES DE CAPITAL
     # ═══════════════════════════════════════════════════════════════
-    capital_per_trade: float = 50.0     # $ par trade
+    capital_per_trade: float = 50.0     # $ par trade (à configurer)
     max_open_positions: int = 5         # Nombre max de positions simultanées
     max_total_exposure: float = 500.0   # Exposition totale max en $
-    
+
     # ═══════════════════════════════════════════════════════════════
     # PARAMÈTRES D'EXÉCUTION
     # ═══════════════════════════════════════════════════════════════
     order_offset: float = 0.01          # Décalage du prix (1¢ off-best)
-    min_volume_usd: float = 1000.0      # Volume minimum du marché
-    position_timeout_seconds: int = 300  # Fermeture auto après 5 min
-    min_time_between_trades: int = 5     # Secondes entre trades
-    
+    position_timeout_seconds: int = 0   # 0 = pas de fermeture auto (manuel)
+    min_time_between_trades: int = 5    # Secondes entre trades
+
+    # ═══════════════════════════════════════════════════════════════
+    # ASSETS CIBLES (configurables)
+    # ═══════════════════════════════════════════════════════════════
+    target_assets: Optional[List[str]] = field(default=None)  # None = utilise settings
+
     # ═══════════════════════════════════════════════════════════════
     # CONTRÔLES
     # ═══════════════════════════════════════════════════════════════
-    auto_trading_enabled: bool = True   # Trading automatique activé
-    require_confirmation: bool = False   # Demander confirmation avant trade
+    auto_trading_enabled: bool = False  # Trading automatique désactivé (manuel)
+    require_confirmation: bool = True   # Confirmation avant trade
     
     def to_dict(self) -> dict:
         """Convertit en dictionnaire pour sauvegarde."""

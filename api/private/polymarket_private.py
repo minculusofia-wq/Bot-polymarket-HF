@@ -1,30 +1,35 @@
 """
-Polymarket Private Client - API authentifiée pour passer des ordres
+Polymarket Private API Client (Order Placement)
 
-⚠️ CE FICHIER NÉCESSITE VOS CREDENTIALS POUR FONCTIONNER
+Utilise py-clob-client officiel de Polymarket.
+Documentation: https://github.com/Polymarket/py-clob-client
 
-Endpoints privés:
-- POST /order : Placer un ordre
-- DELETE /order/{id} : Annuler un ordre
-- GET /orders : Mes ordres actifs
-- GET /positions : Mes positions
-
-Authentification requise:
-- API Key Polymarket
-- Signature des requêtes
-- Wallet connecté pour signer les transactions
+Modes supportés:
+1. Direct EOA (MetaMask, hardware wallet) - signature_type=0
+2. Email/Magic wallet proxy - signature_type=1
+3. Browser wallet proxy - signature_type=2
 """
 
-import hmac
-import hashlib
-import time
-import json
-import httpx
-from typing import Optional, Any
-from dataclasses import dataclass
+from typing import Optional, Dict, Any, List
 from enum import Enum
+import asyncio
 
-from config import get_settings
+# Import py-clob-client
+try:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import OrderArgs, OrderType, MarketOrderArgs
+    from py_clob_client.order_builder.constants import BUY, SELL
+    _HAS_CLOB_CLIENT = True
+except ImportError:
+    _HAS_CLOB_CLIENT = False
+    print("⚠️ py-clob-client non installé. pip install py-clob-client")
+
+
+class SignatureType(Enum):
+    """Types de signature supportés par Polymarket."""
+    EOA = 0           # Direct wallet (MetaMask, Ledger)
+    MAGIC = 1         # Email/Magic wallet
+    BROWSER_PROXY = 2 # Browser wallet proxy
 
 
 class OrderSide(Enum):
@@ -33,350 +38,317 @@ class OrderSide(Enum):
     SELL = "SELL"
 
 
-class OrderType(Enum):
-    """Type d'ordre."""
-    LIMIT = "LMT"
-    MARKET = "MKT"
-    GTC = "GTC"  # Good Till Cancelled
-    GTD = "GTD"  # Good Till Date
-    FOK = "FOK"  # Fill Or Kill
-
-
-@dataclass
-class PolymarketCredentials:
+class PolymarketPrivate:
     """
-    Credentials pour API privée Polymarket.
-    
-    ⚠️ À REMPLIR avec vos propres credentials.
-    """
-    api_key: str = ""
-    api_secret: str = ""
-    passphrase: str = ""  # Si requis
-    
-    @property
-    def is_valid(self) -> bool:
-        """Vérifie si les credentials sont présentes."""
-        return bool(self.api_key and self.api_secret)
+    Client privé Polymarket pour l'exécution d'ordres.
 
-
-@dataclass
-class Order:
-    """Représentation d'un ordre."""
-    id: str
-    market_id: str
-    token_id: str
-    side: OrderSide
-    price: float
-    size: float
-    filled_size: float
-    status: str
-    created_at: str
-
-
-@dataclass
-class Position:
-    """Représentation d'une position."""
-    market_id: str
-    token_id: str
-    outcome: str  # "Yes" ou "No"
-    size: float
-    avg_price: float
-    current_price: float
-    unrealized_pnl: float
-
-
-class PolymarketPrivateClient:
-    """
-    Client pour les endpoints privés de Polymarket CLOB.
-    
-    ⚠️ REQUIRES AUTHENTICATION
-    
     Usage:
-        credentials = PolymarketCredentials(
-            api_key="your_key",
-            api_secret="your_secret"
+        client = PolymarketPrivate(
+            private_key="0x...",
+            api_key="...",
+            api_secret="...",
+            passphrase="..."
         )
-        client = PolymarketPrivateClient(credentials)
-        await client.place_order(...)
+        await client.create_limit_order(token_id, "BUY", 0.55, 100)
     """
-    
-    def __init__(self, credentials: PolymarketCredentials):
-        self.credentials = credentials
-        self.settings = get_settings()
-        self.base_url = self.settings.polymarket_api_url
-        self._client: Optional[httpx.AsyncClient] = None
-        self._authenticated = False
-    
-    async def __aenter__(self):
-        """Initialise le client HTTP."""
-        if not self.credentials.is_valid:
-            raise ValueError("Credentials invalides. Configurez api_key et api_secret.")
-        
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=self.settings.request_timeout,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            }
-        )
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Ferme le client HTTP."""
-        if self._client:
-            await self._client.aclose()
-    
-    def _sign_request(
+
+    # Polymarket CLOB endpoints
+    HOST = "https://clob.polymarket.com"
+    CHAIN_ID = 137  # Polygon Mainnet
+
+    def __init__(
         self,
-        method: str,
-        endpoint: str,
-        timestamp: str,
-        body: str = ""
-    ) -> str:
+        private_key: str,
+        api_key: str = "",
+        api_secret: str = "",
+        passphrase: str = "",
+        signature_type: SignatureType = SignatureType.EOA,
+        funder_address: Optional[str] = None
+    ):
         """
-        Signe une requête avec HMAC-SHA256.
-        
+        Initialise le client privé.
+
         Args:
-            method: Méthode HTTP
-            endpoint: Endpoint de l'API
-            timestamp: Timestamp Unix
-            body: Corps de la requête (JSON)
-            
-        Returns:
-            Signature HMAC
+            private_key: Clé privée du wallet (0x...)
+            api_key: API Key Polymarket (pour API credentials)
+            api_secret: API Secret
+            passphrase: Passphrase API
+            signature_type: Type de signature (EOA, MAGIC, BROWSER_PROXY)
+            funder_address: Adresse du funder (pour proxy wallets)
         """
-        message = f"{timestamp}{method}{endpoint}{body}"
-        signature = hmac.new(
-            self.credentials.api_secret.encode(),
-            message.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        return signature
-    
-    def _get_auth_headers(
-        self,
-        method: str,
-        endpoint: str,
-        body: str = ""
-    ) -> dict:
-        """Génère les headers d'authentification."""
-        timestamp = str(int(time.time() * 1000))
-        signature = self._sign_request(method, endpoint, timestamp, body)
-        
-        return {
-            "POLY_API_KEY": self.credentials.api_key,
-            "POLY_SIGNATURE": signature,
-            "POLY_TIMESTAMP": timestamp,
-            "POLY_PASSPHRASE": self.credentials.passphrase,
-        }
-    
-    async def _request(
-        self,
-        method: str,
-        endpoint: str,
-        data: Optional[dict] = None,
-        params: Optional[dict] = None
-    ) -> Any:
-        """Effectue une requête authentifiée."""
-        if not self._client:
-            raise RuntimeError("Client non initialisé. Utilisez 'async with'.")
-        
-        body = json.dumps(data) if data else ""
-        headers = self._get_auth_headers(method, endpoint, body)
-        
-        response = await self._client.request(
-            method=method,
-            url=endpoint,
-            headers=headers,
-            content=body if data else None,
-            params=params
-        )
-        response.raise_for_status()
-        return response.json()
-    
-    # ═══════════════════════════════════════════════════════════════
-    # ORDRES
-    # ═══════════════════════════════════════════════════════════════
-    
-    async def place_order(
+        self.private_key = private_key
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.passphrase = passphrase
+        self.signature_type = signature_type
+        self.funder_address = funder_address
+
+        self._client: Optional[ClobClient] = None
+        self._initialized = False
+        self._mock_mode = not _HAS_CLOB_CLIENT or not private_key
+
+        if self._mock_mode:
+            print("🔐 Private Client: Mode SIMULATION (pas de clé privée ou SDK manquant)")
+        else:
+            self._initialize_client()
+
+    def _initialize_client(self) -> None:
+        """Initialise le ClobClient officiel."""
+        if not _HAS_CLOB_CLIENT:
+            return
+
+        try:
+            # Configuration selon le type de signature
+            kwargs = {
+                "host": self.HOST,
+                "key": self.private_key,
+                "chain_id": self.CHAIN_ID,
+            }
+
+            # Ajouter credentials API si disponibles
+            if self.api_key and self.api_secret and self.passphrase:
+                kwargs["creds"] = {
+                    "api_key": self.api_key,
+                    "api_secret": self.api_secret,
+                    "api_passphrase": self.passphrase
+                }
+
+            # Configuration pour proxy wallets
+            if self.signature_type != SignatureType.EOA:
+                kwargs["signature_type"] = self.signature_type.value
+                if self.funder_address:
+                    kwargs["funder"] = self.funder_address
+
+            self._client = ClobClient(**kwargs)
+            self._initialized = True
+            print("🔐 Private Client: Connecté à Polymarket CLOB")
+
+        except Exception as e:
+            print(f"❌ Erreur initialisation ClobClient: {e}")
+            self._mock_mode = True
+
+    @property
+    def is_ready(self) -> bool:
+        """Vérifie si le client est prêt pour trader."""
+        return self._initialized and self._client is not None
+
+    async def get_balance(self) -> Dict[str, float]:
+        """Récupère les balances du wallet."""
+        if self._mock_mode:
+            return {"USDC": 1000.0, "mock": True}
+
+        try:
+            # py-clob-client est synchrone, on l'exécute dans un thread
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self._client.get_balance_allowance)
+            return result
+        except Exception as e:
+            print(f"❌ Erreur get_balance: {e}")
+            return {}
+
+    async def create_limit_order(
         self,
         token_id: str,
-        side: OrderSide,
+        side: str,
         price: float,
         size: float,
-        order_type: OrderType = OrderType.GTC
-    ) -> dict:
+        time_in_force: str = "GTC"
+    ) -> Dict[str, Any]:
         """
-        Place un ordre limit.
-        
+        Crée un ordre limite.
+
         Args:
             token_id: ID du token (YES ou NO)
-            side: BUY ou SELL
+            side: "BUY" ou "SELL"
             price: Prix de l'ordre (0.01 - 0.99)
-            size: Taille en nombre de shares
-            order_type: Type d'ordre
-            
+            size: Quantité en shares
+            time_in_force: GTC (Good Till Cancel) ou FOK (Fill or Kill)
+
         Returns:
             Détails de l'ordre créé
         """
-        data = {
-            "tokenID": token_id,
-            "side": side.value,
-            "price": str(price),
-            "size": str(size),
-            "type": order_type.value,
-        }
-        
-        return await self._request("POST", "/order", data=data)
-    
+        if self._mock_mode:
+            print(f"📝 [SIMULATION] {side} {size} shares @ ${price} (token: {token_id[:16]}...)")
+            return {
+                "orderID": f"mock-{token_id[:8]}-{int(price*100)}",
+                "status": "SIMULATED",
+                "side": side,
+                "price": price,
+                "size": size
+            }
+
+        try:
+            # Construire les arguments de l'ordre
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=BUY if side.upper() == "BUY" else SELL,
+            )
+
+            # Créer et signer l'ordre
+            loop = asyncio.get_event_loop()
+            signed_order = await loop.run_in_executor(
+                None,
+                self._client.create_order,
+                order_args
+            )
+
+            # Soumettre l'ordre
+            result = await loop.run_in_executor(
+                None,
+                self._client.post_order,
+                signed_order,
+                OrderType.GTC if time_in_force == "GTC" else OrderType.FOK
+            )
+
+            print(f"✅ Ordre placé: {side} {size} @ ${price}")
+            return result
+
+        except Exception as e:
+            print(f"❌ Erreur create_limit_order: {e}")
+            return {"error": str(e), "status": "FAILED"}
+
+    async def create_market_order(
+        self,
+        token_id: str,
+        side: str,
+        amount: float
+    ) -> Dict[str, Any]:
+        """
+        Crée un ordre au marché.
+
+        Args:
+            token_id: ID du token
+            side: "BUY" ou "SELL"
+            amount: Montant en USDC (pour BUY) ou en shares (pour SELL)
+
+        Returns:
+            Détails de l'ordre
+        """
+        if self._mock_mode:
+            print(f"📝 [SIMULATION] MARKET {side} ${amount} (token: {token_id[:16]}...)")
+            return {
+                "orderID": f"mock-market-{token_id[:8]}",
+                "status": "SIMULATED",
+                "side": side,
+                "amount": amount
+            }
+
+        try:
+            order_args = MarketOrderArgs(
+                token_id=token_id,
+                amount=amount,
+                side=BUY if side.upper() == "BUY" else SELL,
+            )
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                self._client.create_and_post_market_order,
+                order_args
+            )
+
+            print(f"✅ Ordre marché exécuté: {side} ${amount}")
+            return result
+
+        except Exception as e:
+            print(f"❌ Erreur create_market_order: {e}")
+            return {"error": str(e), "status": "FAILED"}
+
     async def cancel_order(self, order_id: str) -> bool:
         """
         Annule un ordre.
-        
+
         Args:
             order_id: ID de l'ordre à annuler
-            
+
         Returns:
-            True si annulé, False sinon
+            True si annulé avec succès
         """
-        try:
-            await self._request("DELETE", f"/order/{order_id}")
+        if self._mock_mode:
+            print(f"📝 [SIMULATION] Cancel order {order_id}")
             return True
-        except Exception:
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                self._client.cancel,
+                order_id
+            )
+            print(f"✅ Ordre annulé: {order_id}")
+            return True
+
+        except Exception as e:
+            print(f"❌ Erreur cancel_order: {e}")
             return False
-    
-    async def cancel_all_orders(self) -> int:
-        """
-        Annule tous les ordres actifs.
-        
-        Returns:
-            Nombre d'ordres annulés
-        """
-        result = await self._request("DELETE", "/orders")
-        return result.get("canceled", 0)
-    
-    async def get_orders(
-        self,
-        market_id: Optional[str] = None,
-        status: str = "open"
-    ) -> list[dict]:
-        """
-        Récupère les ordres.
-        
-        Args:
-            market_id: Filtrer par marché (optionnel)
-            status: "open", "filled", "canceled", "all"
-            
-        Returns:
-            Liste des ordres
-        """
-        params = {"status": status}
-        if market_id:
-            params["market"] = market_id
-        
-        return await self._request("GET", "/orders", params=params)
-    
-    async def get_order(self, order_id: str) -> Optional[dict]:
-        """Récupère un ordre spécifique."""
+
+    async def cancel_all_orders(self) -> bool:
+        """Annule tous les ordres ouverts."""
+        if self._mock_mode:
+            print("📝 [SIMULATION] Cancel all orders")
+            return True
+
         try:
-            return await self._request("GET", f"/order/{order_id}")
-        except Exception:
-            return None
-    
-    # ═══════════════════════════════════════════════════════════════
-    # POSITIONS
-    # ═══════════════════════════════════════════════════════════════
-    
-    async def get_positions(self) -> list[dict]:
-        """
-        Récupère toutes les positions actives.
-        
-        Returns:
-            Liste des positions
-        """
-        return await self._request("GET", "/positions")
-    
-    async def get_position(self, market_id: str) -> Optional[dict]:
-        """Récupère la position sur un marché spécifique."""
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                self._client.cancel_all
+            )
+            print("✅ Tous les ordres annulés")
+            return True
+
+        except Exception as e:
+            print(f"❌ Erreur cancel_all_orders: {e}")
+            return False
+
+    async def get_open_orders(self) -> List[Dict[str, Any]]:
+        """Récupère les ordres ouverts."""
+        if self._mock_mode:
+            return []
+
         try:
-            return await self._request("GET", f"/positions/{market_id}")
-        except Exception:
-            return None
-    
-    # ═══════════════════════════════════════════════════════════════
-    # COMPTE
-    # ═══════════════════════════════════════════════════════════════
-    
-    async def get_balance(self) -> dict:
-        """
-        Récupère le solde du compte.
-        
-        Returns:
-            Solde USDC disponible et total
-        """
-        return await self._request("GET", "/balance")
-    
-    async def get_trades(
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                self._client.get_orders
+            )
+            return result
+
+        except Exception as e:
+            print(f"❌ Erreur get_open_orders: {e}")
+            return []
+
+    async def get_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Récupère l'historique des trades."""
+        if self._mock_mode:
+            return []
+
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._client.get_trades(limit=limit)
+            )
+            return result
+
+        except Exception as e:
+            print(f"❌ Erreur get_trades: {e}")
+            return []
+
+    # Alias pour compatibilité avec l'ancien code
+    async def create_order(
         self,
-        market_id: Optional[str] = None,
-        limit: int = 100
-    ) -> list[dict]:
-        """
-        Récupère l'historique des trades.
-        
-        Args:
-            market_id: Filtrer par marché (optionnel)
-            limit: Nombre max de résultats
-            
-        Returns:
-            Liste des trades
-        """
-        params = {"limit": limit}
-        if market_id:
-            params["market"] = market_id
-        
-        return await self._request("GET", "/trades", params=params)
-    
-    # ═══════════════════════════════════════════════════════════════
-    # HELPERS HFT
-    # ═══════════════════════════════════════════════════════════════
-    
-    async def place_bilateral_orders(
-        self,
-        token_yes_id: str,
-        token_no_id: str,
-        price_yes: float,
-        price_no: float,
+        market_id: str,
+        side: str,
+        price: float,
         size: float
-    ) -> tuple[dict, dict]:
-        """
-        Place deux ordres simultanés (YES et NO).
-        
-        Stratégie market-making: acheter des deux côtés.
-        
-        Args:
-            token_yes_id: ID du token YES
-            token_no_id: ID du token NO
-            price_yes: Prix d'achat YES
-            price_no: Prix d'achat NO
-            size: Taille des ordres
-            
-        Returns:
-            Tuple (ordre_yes, ordre_no)
-        """
-        order_yes = await self.place_order(
-            token_id=token_yes_id,
-            side=OrderSide.BUY,
-            price=price_yes,
+    ) -> Dict[str, Any]:
+        """Alias pour create_limit_order (compatibilité)."""
+        return await self.create_limit_order(
+            token_id=market_id,
+            side=side.upper(),
+            price=price,
             size=size
         )
-        
-        order_no = await self.place_order(
-            token_id=token_no_id,
-            side=OrderSide.BUY,
-            price=price_no,
-            size=size
-        )
-        
-        return order_yes, order_no

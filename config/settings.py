@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # ═══════════════════════════════════════════════════════════════
     polymarket_api_key: str = Field(default="", env="POLYMARKET_API_KEY")
     polymarket_api_secret: str = Field(default="", env="POLYMARKET_API_SECRET")
+    polymarket_passphrase: str = Field(default="", env="POLYMARKET_PASSPHRASE")
+    polymarket_private_key: str = Field(default="", env="POLYMARKET_PRIVATE_KEY")
     
     # ═══════════════════════════════════════════════════════════════
     # WALLET POLYGON
@@ -34,15 +36,28 @@ class Settings(BaseSettings):
     chain_id: int = 137  # Polygon Mainnet
     
     # ═══════════════════════════════════════════════════════════════
-    # MARCHÉS CIBLES
+    # MARCHÉS CIBLES - HFT CRYPTO
     # ═══════════════════════════════════════════════════════════════
     target_keywords: list[str] = [
+        # Top volatilité crypto
         "BTC", "Bitcoin",
-        "SOL", "Solana", 
-        "ETH", "Ethereum",
-        "XRP", "Ripple"
+        "ETH", "Ethereum", 
+        "SOL", "Solana",
+        "XRP", "Ripple",
+        "DOGE", "Dogecoin",
+        "PEPE",
+        "TON", "Telegram",
+        "BNB", "Binance"
     ]
-    market_types: list[str] = ["Up", "Down", "above", "below", "higher", "lower"]
+    
+    market_types: list[str] = [
+        # Types de marchés prix/prédiction
+        "Up", "Down", "Above", "Below",
+        "Price", "Hit", "Reach", "Touch",
+        "High", "Low", "Dip", "Surge", "Moon",
+        "Hour", "Today", "EOD", "Tomorrow",
+        "$", "%" , "?"
+    ]
     
     # ═══════════════════════════════════════════════════════════════
     # PARAMÈTRES SYSTÈME
@@ -68,7 +83,12 @@ class Settings(BaseSettings):
     @property
     def has_api_credentials(self) -> bool:
         """Vérifie si les credentials API sont configurées."""
-        return bool(self.polymarket_api_key and self.polymarket_api_secret)
+        return bool(self.polymarket_api_key and self.polymarket_api_secret and self.polymarket_passphrase)
+    
+    @property
+    def has_private_key(self) -> bool:
+        """Vérifie si la clé privée est configurée."""
+        return bool(self.polymarket_private_key)
     
     @property
     def has_wallet(self) -> bool:

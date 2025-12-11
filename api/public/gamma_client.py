@@ -151,7 +151,9 @@ class GammaClient:
     async def search_markets(
         self,
         query: str,
-        limit: int = 50
+        limit: int = 50,
+        active: bool = True,
+        closed: bool = False
     ) -> list[dict]:
         """
         Recherche des marchés par texte.
@@ -159,13 +161,17 @@ class GammaClient:
         Args:
             query: Terme de recherche
             limit: Nombre max de résultats
+            active: Filtrer les marchés actifs
+            closed: Inclure les marchés fermés
             
         Returns:
             Liste des marchés correspondants
         """
         params = {
             "q": query,
-            "limit": limit
+            "limit": limit,
+            "active": str(active).lower(),
+            "closed": str(closed).lower()
         }
         
         return await self._request("GET", "/markets", params)
@@ -173,24 +179,45 @@ class GammaClient:
     async def get_crypto_markets(self) -> list[dict]:
         """
         Récupère les marchés liés aux cryptos.
-        
-        Effectue une recherche pour chaque mot-clé crypto.
+
+        Effectue une recherche parallèle pour chaque mot-clé crypto.
         """
+        import asyncio
+
         crypto_markets = []
-        
-        for keyword in self.settings.target_keywords:
+        seen_ids = set()
+
+        async def search_keyword(keyword: str) -> list[dict]:
+            """Recherche pour un keyword spécifique."""
             try:
-                results = await self.search_markets(keyword, limit=50)
-                
-                # Filtrer pour les Up/Down
-                for market in results:
-                    question = market.get("question", "").lower()
-                    if any(t.lower() in question for t in self.settings.market_types):
-                        if market not in crypto_markets:
-                            crypto_markets.append(market)
+                return await self.search_markets(
+                    keyword,
+                    limit=50,
+                    active=True,
+                    closed=False
+                )
             except Exception:
+                return []
+
+        # Recherche parallèle pour tous les keywords
+        tasks = [search_keyword(kw) for kw in self.settings.target_keywords]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Traiter les résultats
+        for result in results:
+            if isinstance(result, Exception) or not result:
                 continue
-        
+
+            for market in result:
+                market_id = market.get("id")
+                if not market_id or market_id in seen_ids:
+                    continue
+
+                question = market.get("question", "").lower()
+                if any(t.lower() in question for t in self.settings.market_types):
+                    crypto_markets.append(market)
+                    seen_ids.add(market_id)
+
         return crypto_markets
     
     def parse_market(self, data: dict) -> Optional[GammaMarket]:
