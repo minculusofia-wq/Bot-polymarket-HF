@@ -57,10 +57,17 @@ class GammaClient:
         self._client: Optional[httpx.AsyncClient] = None
     
     async def __aenter__(self):
-        """Initialise le client HTTP."""
+        """Initialise le client HTTP avec connection pooling."""
+        # 5.8: Connection pooling pour réutilisation des connexions
+        limits = httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=50,
+            keepalive_expiry=30.0
+        )
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=self.settings.request_timeout,
+            limits=limits,
             headers={
                 "Accept": "application/json",
                 "User-Agent": "HFT-Scalper-Bot/1.0"
@@ -181,6 +188,8 @@ class GammaClient:
         Récupère les marchés liés aux cryptos.
 
         Effectue une recherche parallèle pour chaque mot-clé crypto.
+        Filtre relaxé: accepte tous les marchés avec keyword crypto
+        (le scanner fera le filtrage fin plus tard).
         """
         import asyncio
 
@@ -196,14 +205,15 @@ class GammaClient:
                     active=True,
                     closed=False
                 )
-            except Exception:
+            except Exception as e:
+                print(f"⚠️ [Gamma] Erreur recherche '{keyword}': {e}")
                 return []
 
         # Recherche parallèle pour tous les keywords
         tasks = [search_keyword(kw) for kw in self.settings.target_keywords]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Traiter les résultats
+        # Traiter les résultats - filtre relaxé
         for result in results:
             if isinstance(result, Exception) or not result:
                 continue
@@ -213,10 +223,10 @@ class GammaClient:
                 if not market_id or market_id in seen_ids:
                     continue
 
-                question = market.get("question", "").lower()
-                if any(t.lower() in question for t in self.settings.market_types):
-                    crypto_markets.append(market)
-                    seen_ids.add(market_id)
+                # Filtre relaxé: accepter tous les marchés crypto actifs
+                # Le scanner appliquera le filtre market_types plus tard
+                crypto_markets.append(market)
+                seen_ids.add(market_id)
 
         return crypto_markets
     

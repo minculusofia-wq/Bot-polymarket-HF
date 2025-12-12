@@ -9,6 +9,7 @@ Fonctionnalités:
 """
 
 import json
+import asyncio
 from typing import Optional
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -318,8 +319,8 @@ class OrderManager:
             except Exception:
                 pass
     
-    def _save_history(self) -> None:
-        """Sauvegarde l'historique dans le fichier."""
+    def _save_history_sync(self) -> None:
+        """Sauvegarde synchrone de l'historique (interne)."""
         self._trades_file.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "total_pnl": self._total_pnl,
@@ -329,6 +330,20 @@ class OrderManager:
         }
         with open(self._trades_file, "w") as f:
             json.dump(data, f, indent=2)
+
+    def _save_history(self) -> None:
+        """5.3: Sauvegarde non-bloquante de l'historique."""
+        try:
+            loop = asyncio.get_running_loop()
+            # Si dans un contexte async, exécuter en thread séparé
+            loop.run_in_executor(None, self._save_history_sync)
+        except RuntimeError:
+            # Pas de loop async, exécution synchrone
+            self._save_history_sync()
+
+    async def _save_history_async(self) -> None:
+        """5.3: Sauvegarde asynchrone de l'historique."""
+        await asyncio.to_thread(self._save_history_sync)
     
     def get_daily_pnl(self) -> float:
         """Calcule le PnL du jour."""

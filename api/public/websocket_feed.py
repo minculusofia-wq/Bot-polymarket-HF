@@ -11,6 +11,7 @@ Permet une réaction rapide aux changements de marché.
 
 import json
 import asyncio
+import ssl
 import websockets
 from typing import Optional, Callable, Any
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from datetime import datetime
 from enum import Enum
 
 from config import get_settings
+from core.performance import json_loads, json_dumps  # 5.7: orjson pour parsing rapide
 
 
 class MessageType(Enum):
@@ -75,8 +77,9 @@ class WebSocketFeed:
         self._subscriptions: set[str] = set()
         self._running: bool = False
         self._reconnect_attempts: int = 0
-        self._max_reconnect_attempts: int = 10
-        
+        self._max_reconnect_attempts: int = 3  # Réduit pour fallback rapide vers REST
+        self._connection_failed_permanently: bool = False  # Si True, ne plus tenter de reconnecter
+
         # Callbacks
         self.on_price_update: Optional[Callable[[PriceUpdate], None]] = None
         self.on_book_update: Optional[Callable[[BookUpdate], None]] = None
@@ -87,30 +90,56 @@ class WebSocketFeed:
     
     @property
     def is_connected(self) -> bool:
-        """Vérifie si le WebSocket est connecté."""
-        return self._ws is not None and self._ws.open
+        """Vérifie si le WebSocket est connecté (compatible websockets 15.x)."""
+        if self._ws is None:
+            return False
+        # websockets 15.x: utiliser state au lieu de open
+        try:
+            from websockets.protocol import State
+            return self._ws.state == State.OPEN
+        except (ImportError, AttributeError):
+            # Fallback pour anciennes versions
+            return hasattr(self._ws, 'open') and self._ws.open
     
     async def connect(self) -> bool:
         """
         Établit la connexion WebSocket.
-        
+
         Returns:
             True si connecté, False sinon
         """
+        # Si on a abandonné définitivement, ne pas réessayer
+        if self._connection_failed_permanently:
+            return False
+
         try:
+            # SSL context pour contourner les problèmes de certificat (VPN)
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
             self._ws = await websockets.connect(
                 self.ws_url,
                 ping_interval=30,
                 ping_timeout=10,
-                close_timeout=5
+                close_timeout=5,
+                open_timeout=10,  # Réduit pour fail fast
+                ssl=ssl_context,
+                additional_headers={
+                    "User-Agent": "HFT-Scalper-Bot/2.0",
+                    "Origin": "https://polymarket.com"
+                }
             )
             self._running = True
             self._reconnect_attempts = 0
-            
+
             if self.on_connect:
                 self.on_connect()
-            
+
             return True
+        except asyncio.TimeoutError:
+            # Timeout = probablement pas de WebSocket disponible
+            return False
         except Exception as e:
             if self.on_error:
                 self.on_error(e)
@@ -164,51 +193,62 @@ class WebSocketFeed:
     async def listen(self) -> None:
         """
         Écoute les messages WebSocket en continu.
-        
+
         Boucle infinie avec reconnexion automatique.
+        Sort de la boucle si connexion échoue définitivement.
         """
-        while self._running:
+        while self._running and not self._connection_failed_permanently:
             try:
                 if not self.is_connected:
                     connected = await self._reconnect()
                     if not connected:
+                        if self._connection_failed_permanently:
+                            # Sortir de la boucle silencieusement
+                            break
                         await asyncio.sleep(5)
                         continue
-                
+
                 # Écoute des messages
                 async for message in self._ws:
                     if not self._running:
                         break
-                    
+
                     await self._handle_message(message)
-            
+
             except websockets.exceptions.ConnectionClosed:
                 if self.on_disconnect:
                     self.on_disconnect()
-                
-                if self._running:
+
+                if self._running and not self._connection_failed_permanently:
                     await self._reconnect()
-            
+
             except Exception as e:
-                if self.on_error:
+                if self.on_error and not self._connection_failed_permanently:
                     self.on_error(e)
-                
-                await asyncio.sleep(1)
+
+                if not self._connection_failed_permanently:
+                    await asyncio.sleep(1)
     
     async def _reconnect(self) -> bool:
         """Tente de se reconnecter."""
+        # Si déjà abandonné, ne pas réessayer
+        if self._connection_failed_permanently:
+            return False
+
         self._reconnect_attempts += 1
-        
+
         if self._reconnect_attempts > self._max_reconnect_attempts:
             self._running = False
+            self._connection_failed_permanently = True
+            print("⚠️ [WS] Max reconnexions atteint - Mode REST uniquement (silencieux)")
             return False
-        
-        # Backoff exponentiel
-        wait_time = min(30, 2 ** self._reconnect_attempts)
+
+        # Backoff exponentiel mais court
+        wait_time = min(10, 2 ** self._reconnect_attempts)
         await asyncio.sleep(wait_time)
-        
+
         connected = await self.connect()
-        
+
         # Re-souscrire aux tokens
         if connected and self._subscriptions:
             for token_id in list(self._subscriptions):
@@ -221,13 +261,13 @@ class WebSocketFeed:
                     await self._ws.send(json.dumps(message))
                 except Exception:
                     pass
-        
+
         return connected
     
     async def _handle_message(self, raw_message: str) -> None:
         """Traite un message WebSocket."""
         try:
-            data = json.loads(raw_message)
+            data = json_loads(raw_message)  # 5.7: orjson 3x plus rapide
             msg_type = data.get("type", data.get("event", ""))
             
             if msg_type in ["price", "price_update"]:

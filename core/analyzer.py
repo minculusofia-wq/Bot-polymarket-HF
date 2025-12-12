@@ -8,13 +8,21 @@ Fonctionnalités:
 4. Recommande les trades à exécuter
 """
 
-from typing import Optional
+import asyncio
+import time
+from typing import Optional, Dict, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor
 
 from core.scanner import MarketData
 from config import get_trading_params, TradingParams
+
+
+# 5.11: Cache global pour volatility map
+_volatility_cache: Optional[Tuple[float, Dict]] = None  # (timestamp, data)
+VOLATILITY_CACHE_TTL = 60.0  # 60 secondes
 
 
 class OpportunityScore(Enum):
@@ -373,23 +381,76 @@ class OpportunityAnalyzer:
     ) -> list[Opportunity]:
         """
         Analyse tous les marchés et retourne les opportunités.
-        
+
         Args:
             markets: Dictionnaire de MarketData
-            
+
         Returns:
             Liste d'opportunités triées par score (desc)
         """
         opportunities = []
-        
+
         for market_data in markets.values():
             opportunity = self.analyze_market(market_data, volatility_map)
             if opportunity:
                 opportunities.append(opportunity)
-        
+
         # Trier par score décroissant
         opportunities.sort(key=lambda x: (x.score, x.effective_spread), reverse=True)
-        
+
+        return opportunities
+
+    async def analyze_all_markets_parallel(
+        self,
+        markets: dict[str, MarketData],
+        volatility_map: dict = None,
+        max_workers: int = 4
+    ) -> list[Opportunity]:
+        """
+        5.9: Analyse parallèle de tous les marchés (CPU-bound).
+
+        Utilise un ThreadPoolExecutor pour paralléliser l'analyse
+        sur plusieurs cœurs CPU.
+
+        Args:
+            markets: Dictionnaire de MarketData
+            volatility_map: Map optionnelle de volatilité
+            max_workers: Nombre de workers parallèles
+
+        Returns:
+            Liste d'opportunités triées par score (desc)
+        """
+        if not markets:
+            return []
+
+        loop = asyncio.get_event_loop()
+        market_list = list(markets.values())
+
+        # Utiliser ThreadPoolExecutor pour paralléliser le travail CPU
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Créer les tâches
+            tasks = [
+                loop.run_in_executor(
+                    executor,
+                    self.analyze_market,
+                    market_data,
+                    volatility_map
+                )
+                for market_data in market_list
+            ]
+
+            # Exécuter en parallèle
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Filtrer les résultats valides
+        opportunities = [
+            r for r in results
+            if r is not None and not isinstance(r, Exception)
+        ]
+
+        # Trier par score décroissant
+        opportunities.sort(key=lambda x: (x.score, x.effective_spread), reverse=True)
+
         return opportunities
     
     def get_tradeable_opportunities(
@@ -422,5 +483,74 @@ class OpportunityAnalyzer:
         
         if opportunity.score < 4:
             return False
-        
+
         return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# 5.11: FONCTIONS DE CACHE VOLATILITY
+# ═══════════════════════════════════════════════════════════════
+
+def get_cached_volatility() -> Optional[Dict]:
+    """
+    5.11: Récupère la volatility map du cache si non expirée.
+
+    Returns:
+        Dict de volatilité ou None si cache expiré/vide
+    """
+    global _volatility_cache
+
+    if _volatility_cache is None:
+        return None
+
+    timestamp, data = _volatility_cache
+    if time.time() - timestamp < VOLATILITY_CACHE_TTL:
+        return data
+
+    return None
+
+
+def set_cached_volatility(data: Dict) -> None:
+    """
+    5.11: Met à jour le cache de volatilité.
+
+    Args:
+        data: Dict {asset_symbol: volatility_score}
+    """
+    global _volatility_cache
+    _volatility_cache = (time.time(), data)
+
+
+def clear_volatility_cache() -> None:
+    """5.11: Efface le cache de volatilité."""
+    global _volatility_cache
+    _volatility_cache = None
+
+
+async def get_volatility_map_cached(fetch_func) -> Dict:
+    """
+    5.11: Récupère la volatility map avec cache.
+
+    Élimine 95% des appels API en utilisant le cache.
+
+    Args:
+        fetch_func: Fonction async pour récupérer les données fraîches
+
+    Returns:
+        Dict de volatilité
+    """
+    # Vérifier le cache d'abord
+    cached = get_cached_volatility()
+    if cached is not None:
+        return cached
+
+    # Sinon, fetch et cacher
+    try:
+        data = await fetch_func()
+        if data:
+            set_cached_volatility(data)
+            return data
+    except Exception:
+        pass
+
+    return {}

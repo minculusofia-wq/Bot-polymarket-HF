@@ -228,6 +228,9 @@ class TradeManager:
         self._monitoring = False
         self._monitor_task: Optional[asyncio.Task] = None
 
+        # 5.10: Index par market_id pour lookups O(1) sur price updates
+        self._trades_by_market: Dict[str, List[str]] = {}  # market_id -> [trade_ids]
+
         # Callbacks pour notifications
         self.on_trade_closed: Optional[Callable[[Trade, CloseReason], None]] = None
         self.on_sl_triggered: Optional[Callable[[Trade], None]] = None
@@ -245,15 +248,30 @@ class TradeManager:
                     self._trade_counter = data.get("counter", 0)
             except Exception:
                 pass
-    
-    def _save_trades(self) -> None:
-        """Sauvegarde les trades dans le fichier."""
+
+    def _save_trades_sync(self) -> None:
+        """Sauvegarde synchrone des trades (interne)."""
         self._data_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self._data_file, "w") as f:
             json.dump({
                 "counter": self._trade_counter,
                 "trades": [t.to_dict() for t in self._trades.values()]
             }, f, indent=2)
+
+    def _save_trades(self) -> None:
+        """Sauvegarde les trades (lance en background si possible)."""
+        # 5.3: Non-bloquant - schedule la sauvegarde en background
+        try:
+            loop = asyncio.get_running_loop()
+            # Si dans un contexte async, exécuter en thread séparé
+            loop.run_in_executor(None, self._save_trades_sync)
+        except RuntimeError:
+            # Pas de loop async, exécution synchrone
+            self._save_trades_sync()
+
+    async def _save_trades_async(self) -> None:
+        """5.3: Sauvegarde asynchrone des trades (ne bloque pas l'event loop)."""
+        await asyncio.to_thread(self._save_trades_sync)
     
     @property
     def active_trades(self) -> List[Trade]:
@@ -626,3 +644,78 @@ class TradeManager:
         self._save_trades()
         print(f"⚠️ Take-profit supprimé: {trade_id}")
         return True
+
+    # ═══════════════════════════════════════════════════════════════
+    # 5.10: EVENT-DRIVEN SL/TP (Réaction immédiate aux prix WebSocket)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _add_to_market_index(self, trade: Trade) -> None:
+        """5.10: Ajoute un trade à l'index par marché."""
+        market_id = trade.market_id
+        if market_id not in self._trades_by_market:
+            self._trades_by_market[market_id] = []
+        if trade.id not in self._trades_by_market[market_id]:
+            self._trades_by_market[market_id].append(trade.id)
+
+    def _remove_from_market_index(self, trade: Trade) -> None:
+        """5.10: Retire un trade de l'index par marché."""
+        market_id = trade.market_id
+        if market_id in self._trades_by_market:
+            if trade.id in self._trades_by_market[market_id]:
+                self._trades_by_market[market_id].remove(trade.id)
+            # Nettoyer si vide
+            if not self._trades_by_market[market_id]:
+                del self._trades_by_market[market_id]
+
+    def get_trades_for_market(self, market_id: str) -> List[Trade]:
+        """5.10: Récupère les trades actifs pour un marché spécifique (O(1) lookup)."""
+        trade_ids = self._trades_by_market.get(market_id, [])
+        return [
+            self._trades[tid] for tid in trade_ids
+            if tid in self._trades and self._trades[tid].status == TradeStatus.ACTIVE
+        ]
+
+    async def on_price_update(self, market_id: str, price: float) -> List[Trade]:
+        """
+        5.10: Appelé par WebSocket quand un prix change.
+
+        Vérifie immédiatement les conditions SL/TP pour les trades
+        de ce marché spécifique. Réaction en <50ms au lieu de 1000ms.
+
+        Args:
+            market_id: ID du marché mis à jour
+            price: Nouveau prix
+
+        Returns:
+            Liste des trades fermés suite à ce price update
+        """
+        closed_trades = []
+
+        # O(1) lookup grâce à l'index
+        trades = self.get_trades_for_market(market_id)
+
+        for trade in trades:
+            # Mettre à jour le prix et vérifier les conditions
+            close_reason = self.update_price(trade.id, price)
+
+            if close_reason:
+                # Fermer immédiatement
+                closed_trade = await self.close_trade_async(
+                    trade_id=trade.id,
+                    exit_price=price,
+                    reason=close_reason
+                )
+                if closed_trade:
+                    closed_trades.append(closed_trade)
+                    # Retirer de l'index
+                    self._remove_from_market_index(closed_trade)
+
+        return closed_trades
+
+    def register_trade_for_events(self, trade: Trade) -> None:
+        """5.10: Enregistre un trade pour recevoir les price updates."""
+        self._add_to_market_index(trade)
+
+    def unregister_trade_from_events(self, trade: Trade) -> None:
+        """5.10: Désenregistre un trade des price updates."""
+        self._remove_from_market_index(trade)

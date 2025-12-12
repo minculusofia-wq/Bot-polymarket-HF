@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_settings, get_trading_params, update_trading_params, TradingParams
 from core import MarketScanner, OpportunityAnalyzer, OrderManager, TradeManager, TradeSide, MarketMaker, MMConfig, GabagoolEngine, GabagoolConfig
 from core.scanner import ScannerState
+from core.auto_optimizer import AutoOptimizer, OptimizerMode
 from core.performance import (
     setup_uvloop,
     json_dumps,
@@ -52,6 +53,7 @@ order_manager: Optional[OrderManager] = None
 trade_manager: Optional[TradeManager] = None
 market_maker: Optional[MarketMaker] = None
 gabagool_engine: Optional[GabagoolEngine] = None
+auto_optimizer: Optional[AutoOptimizer] = None
 cg_client: Optional[CoinGeckoClient] = None
 binance_client: Optional[BinanceClient] = None
 private_client: Optional[PolymarketPrivate] = None
@@ -69,9 +71,13 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     print("\n🛑 Arrêt du bot en cours...")
-    global scanner, binance_client, cg_client, market_maker, gabagool_engine, is_running
+    global scanner, binance_client, cg_client, market_maker, gabagool_engine, auto_optimizer, is_running
 
     is_running = False
+
+    if auto_optimizer:
+        await auto_optimizer.stop()
+        print("✓ Auto-Optimizer arrêté")
 
     if gabagool_engine:
         await gabagool_engine.stop()
@@ -619,6 +625,126 @@ async def update_gabagool_config(
 
 
 # ═══════════════════════════════════════════════════════════════
+# AUTO-OPTIMIZER ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+class OptimizerModeUpdate(BaseModel):
+    mode: str  # "manual", "semi_auto", "full_auto"
+
+
+@app.post("/api/optimizer/start")
+async def start_optimizer():
+    """Démarre l'Auto-Optimizer."""
+    global auto_optimizer, scanner, gabagool_engine
+
+    if not scanner or not is_running:
+        return {"success": False, "message": "Scanner non démarré. Lancez le scanner d'abord."}
+
+    if not gabagool_engine:
+        gabagool_engine = GabagoolEngine(private_client=private_client)
+
+    try:
+        if not auto_optimizer:
+            auto_optimizer = AutoOptimizer(scanner=scanner, gabagool=gabagool_engine)
+
+        await auto_optimizer.start()
+        return {"success": True, "message": f"Auto-Optimizer démarré en mode {auto_optimizer.mode.value}"}
+
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/optimizer/stop")
+async def stop_optimizer():
+    """Arrête l'Auto-Optimizer."""
+    global auto_optimizer
+
+    if not auto_optimizer:
+        return {"success": False, "message": "Auto-Optimizer non initialisé"}
+
+    await auto_optimizer.stop()
+    return {"success": True, "message": "Auto-Optimizer arrêté"}
+
+
+@app.get("/api/optimizer/status")
+async def get_optimizer_status():
+    """Retourne le statut complet de l'Auto-Optimizer."""
+    global auto_optimizer
+
+    if not auto_optimizer:
+        return {
+            "enabled": False,
+            "mode": "manual",
+            "running": False,
+            "last_update": None,
+            "total_adjustments": 0,
+            "current_params": {},
+            "optimized_params": {},
+            "conditions": {},
+            "recent_events": []
+        }
+
+    return auto_optimizer.get_status()
+
+
+@app.post("/api/optimizer/mode")
+async def set_optimizer_mode(update: OptimizerModeUpdate):
+    """Change le mode de l'Auto-Optimizer."""
+    global auto_optimizer, scanner, gabagool_engine
+
+    # Créer l'optimizer si nécessaire
+    if not auto_optimizer:
+        if not gabagool_engine:
+            gabagool_engine = GabagoolEngine(private_client=private_client)
+        auto_optimizer = AutoOptimizer(scanner=scanner, gabagool=gabagool_engine)
+
+    try:
+        mode = OptimizerMode(update.mode)
+        auto_optimizer.set_mode(mode)
+        return {"success": True, "message": f"Mode changé: {mode.value}", "mode": mode.value}
+    except ValueError:
+        return {"success": False, "message": f"Mode invalide: {update.mode}. Utilisez: manual, semi_auto, full_auto"}
+
+
+@app.get("/api/optimizer/suggestions")
+async def get_optimizer_suggestions():
+    """Retourne les suggestions d'optimisation (pour mode semi-auto)."""
+    global auto_optimizer
+
+    if not auto_optimizer:
+        return {"conditions": {}, "suggestions": [], "timestamp": None}
+
+    return auto_optimizer.get_suggestions()
+
+
+@app.post("/api/optimizer/apply/{param_name}")
+async def apply_optimizer_suggestion(param_name: str):
+    """Applique une suggestion spécifique."""
+    global auto_optimizer
+
+    if not auto_optimizer:
+        return {"success": False, "message": "Auto-Optimizer non initialisé"}
+
+    success = auto_optimizer.apply_suggestion(param_name)
+    if success:
+        return {"success": True, "message": f"Suggestion '{param_name}' appliquée"}
+    return {"success": False, "message": f"Paramètre '{param_name}' non trouvé"}
+
+
+@app.post("/api/optimizer/toggle")
+async def toggle_optimizer():
+    """Active/désactive l'Auto-Optimizer."""
+    global auto_optimizer
+
+    if not auto_optimizer:
+        return {"success": False, "message": "Auto-Optimizer non initialisé"}
+
+    auto_optimizer.enabled = not auto_optimizer.enabled
+    status = "activé" if auto_optimizer.enabled else "désactivé"
+    return {"success": True, "message": f"Auto-Optimizer {status}", "enabled": auto_optimizer.enabled}
+
+
+# ═══════════════════════════════════════════════════════════════
 # WEBSOCKET
 # ═══════════════════════════════════════════════════════════════
 
@@ -646,7 +772,7 @@ async def broadcast(message: dict):
 
 async def broadcast_loop():
     """Boucle de broadcast des données."""
-    global scanner, analyzer, is_running, cg_client, trade_manager, market_maker, gabagool_engine
+    global scanner, analyzer, is_running, cg_client, trade_manager, market_maker, gabagool_engine, auto_optimizer
 
     while is_running:
         try:
@@ -736,6 +862,7 @@ async def broadcast_loop():
                         "stats": trade_manager.get_stats() if trade_manager else {},
                         "market_maker": market_maker.stats if market_maker else {},
                         "gabagool": gabagool_engine.get_stats() if gabagool_engine else {},
+                        "optimizer": auto_optimizer.get_status() if auto_optimizer else {},
                         "timestamp": datetime.now().isoformat(),
                     }
                 })

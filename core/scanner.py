@@ -118,6 +118,13 @@ class MarketScanner:
 
         # IDs prioritaires pour refresh (marchés avec positions actives)
         self._priority_market_ids: set = set()
+
+        # Flag pour éviter spam logs WebSocket
+        self._ws_logged_disconnect: bool = False
+
+        # 5.12: Cache métadonnées marchés (refresh périodique)
+        self._last_markets_refresh: float = 0.0
+        self._markets_refresh_interval: float = 60.0  # Refresh liste marchés toutes les 60s
     
     @property
     def state(self) -> ScannerState:
@@ -126,8 +133,8 @@ class MarketScanner:
 
     @property
     def markets(self) -> dict[str, MarketData]:
-        """Marchés actuellement suivis."""
-        return self._markets.copy()
+        """Marchés actuellement suivis (référence directe - pas de copie)."""
+        return self._markets  # 5.6: Retourner référence directe (pas de .copy())
 
     @property
     def market_count(self) -> int:
@@ -189,6 +196,8 @@ class MarketScanner:
 
     async def _init_websocket(self) -> None:
         """Initialise et connecte le WebSocket pour données temps réel."""
+        self._ws_logged_disconnect = False  # Flag pour éviter spam logs
+
         try:
             self._ws_feed = WebSocketFeed()
 
@@ -197,7 +206,13 @@ class MarketScanner:
             self._ws_feed.on_book_update = self._handle_book_update
             self._ws_feed.on_error = self._handle_ws_error
             self._ws_feed.on_connect = lambda: print("🔌 [WS] WebSocket connecté - Mode temps réel activé")
-            self._ws_feed.on_disconnect = lambda: print("⚠️ [WS] WebSocket déconnecté - Fallback REST")
+
+            def on_ws_disconnect():
+                if not self._ws_logged_disconnect:
+                    print("⚠️ [WS] WebSocket déconnecté - Fallback REST")
+                    self._ws_logged_disconnect = True
+
+            self._ws_feed.on_disconnect = on_ws_disconnect
 
             # Construire le mapping token_id -> market
             self._build_token_mapping()
@@ -208,16 +223,20 @@ class MarketScanner:
                 # S'abonner à tous les tokens
                 token_ids = list(self._token_to_market.keys())
                 if token_ids:
-                    await self._ws_feed.subscribe(token_ids)
-                    print(f"📡 [WS] Abonné à {len(token_ids)} tokens")
+                    try:
+                        await self._ws_feed.subscribe(token_ids)
+                        print(f"📡 [WS] Abonné à {len(token_ids)} tokens")
+                    except Exception:
+                        print("⚠️ [WS] Échec subscription - Mode REST uniquement")
+                        return
 
                 # Lancer la tâche d'écoute en background
                 self._ws_task = asyncio.create_task(self._ws_feed.listen())
             else:
-                print("⚠️ [WS] Connexion WebSocket échouée - Mode REST uniquement")
+                print("ℹ️ [WS] WebSocket non disponible - Mode REST (normal)")
 
         except Exception as e:
-            print(f"⚠️ [WS] Erreur init WebSocket: {e} - Mode REST uniquement")
+            print(f"ℹ️ [WS] Mode REST uniquement (WebSocket: {type(e).__name__})")
 
     def _build_token_mapping(self) -> None:
         """Construit le mapping token_id -> (market_id, side)."""
@@ -434,36 +453,57 @@ class MarketScanner:
                     await asyncio.sleep(2 * error_count)  # Backoff plus court pour HFT
 
     async def _refresh_markets(self) -> None:
-        await self._load_markets()
+        """
+        5.12: Rafraîchit la liste des marchés (avec cache).
+
+        Ne fait un refresh complet que toutes les 60 secondes
+        pour réduire les appels API. Les orderbooks sont mis à jour
+        plus fréquemment séparément.
+        """
+        now = time.time()
+
+        # 5.12: Vérifier si on doit rafraîchir la liste des marchés
+        if now - self._last_markets_refresh >= self._markets_refresh_interval:
+            await self._load_markets()
+            self._last_markets_refresh = now
+        # Sinon, on garde les marchés existants et on update juste les orderbooks
     
     async def _fetch_single_orderbook(self, market_data: MarketData) -> None:
-        """Worker pour update un seul orderbook."""
+        """Worker pour update un seul orderbook (optimisé: parallel + cache)."""
         async with self._concurrency:
             try:
-                # YES Orderbook
-                market_data.orderbook_yes = await self._polymarket_client.get_orderbook(
-                    market_data.market.token_yes_id
+                # 5.4 + 5.5: Fetch YES et NO en PARALLÈLE avec cache activé
+                orderbook_yes, orderbook_no = await asyncio.gather(
+                    self._polymarket_client.get_orderbook(
+                        market_data.market.token_yes_id,
+                        use_cache=True  # 5.5: Activer le cache
+                    ),
+                    self._polymarket_client.get_orderbook(
+                        market_data.market.token_no_id,
+                        use_cache=True  # 5.5: Activer le cache
+                    )
                 )
-                bids = market_data.orderbook_yes.get("bids", [])
-                asks = market_data.orderbook_yes.get("asks", [])
+
+                # Parse YES orderbook
+                market_data.orderbook_yes = orderbook_yes
+                bids = orderbook_yes.get("bids", [])
+                asks = orderbook_yes.get("asks", [])
                 market_data.best_bid_yes = float(bids[0]["price"]) if bids else None
                 market_data.best_ask_yes = float(asks[0]["price"]) if asks else None
                 if market_data.best_bid_yes and market_data.best_ask_yes:
                     market_data.spread_yes = market_data.best_ask_yes - market_data.best_bid_yes
 
-                # NO Orderbook
-                market_data.orderbook_no = await self._polymarket_client.get_orderbook(
-                    market_data.market.token_no_id
-                )
-                bids = market_data.orderbook_no.get("bids", [])
-                asks = market_data.orderbook_no.get("asks", [])
+                # Parse NO orderbook
+                market_data.orderbook_no = orderbook_no
+                bids = orderbook_no.get("bids", [])
+                asks = orderbook_no.get("asks", [])
                 market_data.best_bid_no = float(bids[0]["price"]) if bids else None
                 market_data.best_ask_no = float(asks[0]["price"]) if asks else None
                 if market_data.best_bid_no and market_data.best_ask_no:
                     market_data.spread_no = market_data.best_ask_no - market_data.best_bid_no
-                
+
                 market_data.last_update = datetime.now()
-                
+
                 if self.on_market_update:
                     self.on_market_update(market_data)
 

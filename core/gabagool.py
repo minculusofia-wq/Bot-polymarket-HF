@@ -184,14 +184,15 @@ class PairPosition:
 
 @dataclass
 class GabagoolConfig:
-    """Configuration de la stratégie."""
+    """Configuration de la stratégie (modifiable par AutoOptimizer)."""
 
-    max_pair_cost: float = 0.98       # Pair cost max acceptable
-    min_improvement: float = 0.005    # Amélioration min du pair_cost pour acheter
-    order_size_usd: float = 25.0      # Taille des ordres en $
-    max_position_usd: float = 500.0   # Position max par marché
+    max_pair_cost: float = 0.98       # Pair cost max acceptable (0.90-0.99)
+    min_improvement: float = 0.005    # Amélioration min du pair_cost pour acheter (0.000-0.010)
+    order_size_usd: float = 25.0      # Taille des ordres en $ (10-100)
+    max_position_usd: float = 500.0   # Position max par marché (200-1000)
     balance_threshold: float = 0.2    # Seuil de déséquilibre (20%)
-    refresh_interval: float = 1.0     # Intervalle de scan (secondes)
+    refresh_interval: float = 1.0     # Intervalle de scan (secondes) (0.5-2.0)
+    first_buy_threshold: float = 0.55 # Seuil prix pour premier achat (0.45-0.65)
 
 
 class GabagoolEngine:
@@ -321,14 +322,15 @@ class GabagoolEngine:
         max_pos = self.config.max_position_usd
         max_cost = self.config.max_pair_cost
         min_improve = self.config.min_improvement
+        first_threshold = self.config.first_buy_threshold
 
         # Vérifier la limite de position
         if position.total_cost + (price * qty) > max_pos:
             return False
 
-        # Premier achat YES - toujours OK si prix raisonnable
+        # Premier achat YES - toujours OK si prix sous le seuil
         if position.qty_yes == 0:
-            return price < 0.60
+            return price < first_threshold
 
         # Calcul inline du nouveau pair_cost (évite appel fonction)
         new_avg_yes = (position.cost_yes + price * qty) / (position.qty_yes + qty)
@@ -373,14 +375,15 @@ class GabagoolEngine:
         max_pos = self.config.max_position_usd
         max_cost = self.config.max_pair_cost
         min_improve = self.config.min_improvement
+        first_threshold = self.config.first_buy_threshold
 
         # Vérifier la limite de position
         if position.total_cost + (price * qty) > max_pos:
             return False
 
-        # Premier achat NO - toujours OK si prix raisonnable
+        # Premier achat NO - toujours OK si prix sous le seuil
         if position.qty_no == 0:
-            return price < 0.60
+            return price < first_threshold
 
         # Calcul inline du nouveau pair_cost
         new_avg_no = (position.cost_no + price * qty) / (position.qty_no + qty)

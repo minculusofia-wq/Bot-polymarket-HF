@@ -68,15 +68,17 @@ class OrderExecutor:
         
         self._state = ExecutorState.STOPPED
         self._client: Optional[PolymarketPrivateClient] = None
-        
+
         # Stats
         self._trades_today = 0
         self._successful_trades = 0
         self._failed_trades = 0
         self._last_trade_time: Optional[datetime] = None
-        
-        # Lock pour éviter les trades simultanés
-        self._trade_lock = asyncio.Lock()
+
+        # 5.2: Locks par marché (au lieu d'un lock global)
+        # Permet des trades parallèles sur différents marchés
+        from typing import Dict
+        self._market_locks: Dict[str, asyncio.Lock] = {}
         
         # Callbacks
         self.on_trade_start: Optional[Callable[[Opportunity], None]] = None
@@ -189,17 +191,25 @@ class OrderExecutor:
         
         return True, ""
     
+    def _get_market_lock(self, market_id: str) -> asyncio.Lock:
+        """5.2: Récupère ou crée un lock pour un marché spécifique."""
+        if market_id not in self._market_locks:
+            self._market_locks[market_id] = asyncio.Lock()
+        return self._market_locks[market_id]
+
     async def execute_opportunity(self, opportunity: Opportunity) -> TradeResult:
         """
         Exécute un trade sur une opportunité.
-        
+
         Args:
             opportunity: L'opportunité à trader
-            
+
         Returns:
             TradeResult avec les détails du trade
         """
-        async with self._trade_lock:
+        # 5.2: Lock par marché - permet des trades parallèles sur différents marchés
+        market_lock = self._get_market_lock(opportunity.market_id)
+        async with market_lock:
             self._set_state(ExecutorState.EXECUTING)
             
             try:
@@ -294,24 +304,35 @@ class OrderExecutor:
         
         order_yes_id = None
         order_no_id = None
-        
+
         try:
-            # Placer l'ordre YES
-            order_yes = await self._client.place_order(
-                token_id=opportunity.token_yes_id,
-                side=OrderSide.BUY,
-                price=opportunity.recommended_price_yes,
-                size=size
+            # 5.1: Exécution PARALLÈLE des ordres YES et NO (50% latence gagnée)
+            results = await asyncio.gather(
+                self._client.place_order(
+                    token_id=opportunity.token_yes_id,
+                    side=OrderSide.BUY,
+                    price=opportunity.recommended_price_yes,
+                    size=size
+                ),
+                self._client.place_order(
+                    token_id=opportunity.token_no_id,
+                    side=OrderSide.BUY,
+                    price=opportunity.recommended_price_no,
+                    size=size
+                ),
+                return_exceptions=True  # Capturer les erreurs individuellement
             )
+
+            order_yes, order_no = results
+
+            # Traiter résultat YES
+            if isinstance(order_yes, Exception):
+                raise order_yes  # Propager l'erreur
             order_yes_id = order_yes.get("id")
-            
-            # Placer l'ordre NO
-            order_no = await self._client.place_order(
-                token_id=opportunity.token_no_id,
-                side=OrderSide.BUY,
-                price=opportunity.recommended_price_no,
-                size=size
-            )
+
+            # Traiter résultat NO
+            if isinstance(order_no, Exception):
+                raise order_no  # Propager l'erreur
             order_no_id = order_no.get("id")
             
             # Enregistrer dans l'order manager
